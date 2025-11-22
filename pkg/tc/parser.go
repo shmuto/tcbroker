@@ -79,7 +79,7 @@ func ParseFilterStats(output string) ([]FilterStats, error) {
 					}
 				case "pref":
 					if i+1 < len(parts) {
-						if pref, err := strconv.Atoi(parts[i+1]); err == nil {
+						if pref, errConv := strconv.Atoi(parts[i+1]); errConv == nil {
 							currentFilter.Priority = pref
 						}
 					}
@@ -89,7 +89,7 @@ func ParseFilterStats(output string) ([]FilterStats, error) {
 					}
 				case "chain":
 					if i+1 < len(parts) {
-						if chain, err := strconv.Atoi(parts[i+1]); err == nil {
+						if chain, errConv := strconv.Atoi(parts[i+1]); errConv == nil {
 							currentFilter.Chain = chain
 						}
 					}
@@ -179,10 +179,10 @@ func ParseFilterStats(output string) ([]FilterStats, error) {
 			// Extract: Sent 840 bytes 10 pkt
 			re := regexp.MustCompile(`Sent (\d+) bytes (\d+) pkt`)
 			if matches := re.FindStringSubmatch(line); len(matches) == 3 {
-				if bytes, err := strconv.ParseInt(matches[1], 10, 64); err == nil {
+				if bytes, errConv := strconv.ParseInt(matches[1], 10, 64); errConv == nil {
 					currentAction.Bytes = bytes
 				}
-				if pkts, err := strconv.ParseInt(matches[2], 10, 64); err == nil {
+				if pkts, errConv := strconv.ParseInt(matches[2], 10, 64); errConv == nil {
 					currentAction.Packets = pkts
 				}
 			}
@@ -190,21 +190,21 @@ func ParseFilterStats(output string) ([]FilterStats, error) {
 			// Extract: (dropped 0, overlimits 0 requeues 0)
 			re = regexp.MustCompile(`dropped (\d+)`)
 			if matches := re.FindStringSubmatch(line); len(matches) == 2 {
-				if dropped, err := strconv.ParseInt(matches[1], 10, 64); err == nil {
+				if dropped, errConv := strconv.ParseInt(matches[1], 10, 64); errConv == nil {
 					currentAction.Dropped = dropped
 				}
 			}
 
 			re = regexp.MustCompile(`overlimits (\d+)`)
 			if matches := re.FindStringSubmatch(line); len(matches) == 2 {
-				if overlimits, err := strconv.ParseInt(matches[1], 10, 64); err == nil {
+				if overlimits, errConv := strconv.ParseInt(matches[1], 10, 64); errConv == nil {
 					currentAction.Overlimits = overlimits
 				}
 			}
 
 			re = regexp.MustCompile(`requeues (\d+)`)
 			if matches := re.FindStringSubmatch(line); len(matches) == 2 {
-				if requeues, err := strconv.ParseInt(matches[1], 10, 64); err == nil {
+				if requeues, errConv := strconv.ParseInt(matches[1], 10, 64); errConv == nil {
 					currentAction.Requeues = requeues
 				}
 			}
@@ -216,10 +216,10 @@ func ParseFilterStats(output string) ([]FilterStats, error) {
 			line = strings.TrimSpace(line)
 			re := regexp.MustCompile(`backlog (\d+)b (\d+)p`)
 			if matches := re.FindStringSubmatch(line); len(matches) == 3 {
-				if bytes, err := strconv.ParseInt(matches[1], 10, 64); err == nil {
+				if bytes, errConv := strconv.ParseInt(matches[1], 10, 64); errConv == nil {
 					currentAction.BacklogBytes = bytes
 				}
-				if pkts, err := strconv.ParseInt(matches[2], 10, 64); err == nil {
+				if pkts, errConv := strconv.ParseInt(matches[2], 10, 64); errConv == nil {
 					currentAction.BacklogPkts = pkts
 				}
 			}
