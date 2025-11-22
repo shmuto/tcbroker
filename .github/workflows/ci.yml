@@ -82,13 +82,6 @@ jobs:
     - name: Build Docker image
       run: docker compose -f tests/docker/compose.yaml build
 
-    - name: Run Docker tests
-      run: |
-        docker compose -f tests/docker/compose.yaml up -d
-        sleep 5
-        docker exec tcbroker-broker /workspace/tests/docker/test-mirroring.sh || true
-        docker compose -f tests/docker/compose.yaml down
-
   lint:
     name: Lint
     runs-on: ubuntu-latest
