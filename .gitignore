@@ -1,0 +1,38 @@
+# Binary
+tcbroker
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test coverage
+coverage.txt
+coverage.out
+*.test
+
+# Temporary files
+*.tmp
+*.log
+*~
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Environment variables
+.env
+.env.local
+*.pem
+*.key
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Archives
+*.tar.gz
+*.zip

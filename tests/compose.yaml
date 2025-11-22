@@ -1,0 +1,79 @@
+services:
+  # Main test container with tcbroker
+  tcbroker:
+    build:
+      context: ..
+      dockerfile: tests/image/Dockerfile
+    container_name: tcbroker-broker
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    command: sleep infinity
+    stop_grace_period: 1s
+    networks:
+      test-net:
+        ipv4_address: 172.20.0.10
+    volumes:
+      # Mount test config and script
+      - type: bind
+        source: ./config.yaml
+        target: /workspace/tests/config.yaml
+        read_only: true
+      - type: bind
+        source: ./test.sh
+        target: /workspace/tests/test.sh
+        read_only: true
+      # Mount the tcbroker binary
+      - type: bind
+        source: ../tcbroker
+        target: /workspace/tcbroker
+        read_only: true
+    stdin_open: true
+    tty: true
+
+  # Traffic generator (client)
+  client:
+    image: nicolaka/netshoot
+    container_name: tcbroker-client
+    command: sleep infinity
+    stop_grace_period: 1s
+    networks:
+      test-net:
+        ipv4_address: 172.20.0.20
+    stdin_open: true
+    tty: true
+
+  # Traffic receiver (server)
+  server:
+    image: nicolaka/netshoot
+    container_name: tcbroker-server
+    command: sleep infinity
+    stop_grace_period: 1s
+    networks:
+      test-net:
+        ipv4_address: 172.20.0.30
+    stdin_open: true
+    tty: true
+
+  # Mirror target (to receive mirrored packets)
+  mirror:
+    image: nicolaka/netshoot
+    container_name: tcbroker-mirror
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    command: sleep infinity
+    stop_grace_period: 1s
+    networks:
+      test-net:
+        ipv4_address: 172.20.0.40
+    stdin_open: true
+    tty: true
+
+networks:
+  test-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
