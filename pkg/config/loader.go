@@ -20,8 +20,8 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config data: %w", err)
 	}
 
-	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("config validation failed: %w", err)
+	if errValidate := cfg.Validate(); errValidate != nil {
+		return nil, fmt.Errorf("config validation failed: %w", errValidate)
 	}
 
 	return &cfg, nil

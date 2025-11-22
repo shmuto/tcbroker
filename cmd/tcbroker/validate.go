@@ -81,8 +81,8 @@ func validate(cmd *cobra.Command, args []string) {
 
 		// Check each unique interface
 		for ifaceName := range interfaceSet {
-			if _, err := net.InterfaceByName(ifaceName); err != nil {
-				fmt.Printf("  ❌ Interface '%s' not found: %v\n", ifaceName, err)
+			if _, errIface := net.InterfaceByName(ifaceName); errIface != nil {
+				fmt.Printf("  ❌ Interface '%s' not found: %v\n", ifaceName, errIface)
 				allInterfacesExist = false
 			} else {
 				fmt.Printf("  ✓ Interface '%s' exists\n", ifaceName)

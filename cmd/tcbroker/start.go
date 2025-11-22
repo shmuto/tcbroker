@@ -53,8 +53,8 @@ func start(cmd *cobra.Command, args []string) {
 
 	// If --force is used, cleanup existing rules first
 	if force {
-		if err := runner.Cleanup(cfg); err != nil {
-			fmt.Printf("Error during cleanup: %v\n", err)
+		if errCleanup := runner.Cleanup(cfg); errCleanup != nil {
+			fmt.Printf("Error during cleanup: %v\n", errCleanup)
 			os.Exit(1)
 		}
 	}
@@ -71,7 +71,7 @@ func start(cmd *cobra.Command, args []string) {
 
 		// Verify all interfaces exist
 		for ifaceName := range interfaceSet {
-			if _, err := net.InterfaceByName(ifaceName); err != nil {
+			if _, errIface := net.InterfaceByName(ifaceName); errIface != nil {
 				fmt.Printf("Error: interface '%s' not found\n", ifaceName)
 				os.Exit(1)
 			}
@@ -87,8 +87,8 @@ func start(cmd *cobra.Command, args []string) {
 	// Apply the configuration
 	// Step 1: Add clsact qdisc to all source interfaces
 	for srcIntf := range srcInterfaceSet {
-		if err := runner.EnsureClsactQdisc(srcIntf); err != nil {
-			fmt.Printf("Error: failed to add clsact qdisc to %s: %v\n", srcIntf, err)
+		if errQdisc := runner.EnsureClsactQdisc(srcIntf); errQdisc != nil {
+			fmt.Printf("Error: failed to add clsact qdisc to %s: %v\n", srcIntf, errQdisc)
 			os.Exit(1)
 		}
 	}
@@ -100,8 +100,8 @@ func start(cmd *cobra.Command, args []string) {
 
 		// Apply each filter in the rule
 		for _, filter := range rule.Filters {
-			if err := runner.AddMirrorFilter(rule.SrcIntf, direction, rule.DstIntf, filter, rule.Rewrite); err != nil {
-				fmt.Printf("Error: failed to add filter rule: %v\n", err)
+			if errFilter := runner.AddMirrorFilter(rule.SrcIntf, direction, rule.DstIntf, filter, rule.Rewrite); errFilter != nil {
+				fmt.Printf("Error: failed to add filter rule: %v\n", errFilter)
 				os.Exit(1)
 			}
 		}
