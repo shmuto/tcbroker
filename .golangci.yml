@@ -2,12 +2,6 @@ version: "2"
 
 run:
   timeout: 5m
-  tests: true
-
-output:
-  format: colored-line-number
-  print-issued-lines: true
-  print-linter-name: true
 
 linters:
   enable:
@@ -17,13 +11,6 @@ linters:
     - unused
     - ineffassign
 
-linters-settings:
-  errcheck:
-    check-blank: true
-  govet:
-    check-shadowing: true
-
 issues:
-  exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0
