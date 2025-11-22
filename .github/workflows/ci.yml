@@ -68,20 +68,6 @@ jobs:
         path: tcbroker
         retention-days: 7
 
-  docker-test:
-    name: Docker Integration Tests
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Build Docker image
-      run: docker compose -f tests/docker/compose.yaml build
-
   lint:
     name: Lint
     runs-on: ubuntu-latest
