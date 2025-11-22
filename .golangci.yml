@@ -1,15 +1,20 @@
+version: "2"
+
 run:
   timeout: 5m
   tests: true
 
+output:
+  format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true
+
 linters:
   enable:
-    - gofmt
     - govet
     - errcheck
     - staticcheck
     - unused
-    - gosimple
     - ineffassign
 
 linters-settings:

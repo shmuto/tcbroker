@@ -108,11 +108,12 @@ func BuildTCArgsWithRewrite(ifaceName, hook, target string, f Filter, rewrite *R
 
 			// Add checksum recalculation after IP modification
 			checksums := []string{"ip"}
-			if f.IPProto == "tcp" {
+			switch f.IPProto {
+			case "tcp":
 				checksums = append(checksums, "tcp")
-			} else if f.IPProto == "udp" {
+			case "udp":
 				checksums = append(checksums, "udp")
-			} else if f.IPProto == "icmp" {
+			case "icmp":
 				checksums = append(checksums, "icmp")
 			}
 
