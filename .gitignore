@@ -1,5 +1,5 @@
-# Binary
-tcbroker
+# Binary (root directory only)
+/tcbroker
 
 # IDE
 .vscode/
