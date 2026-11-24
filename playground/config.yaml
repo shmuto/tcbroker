@@ -1,0 +1,59 @@
+ports:
+  tap-wan:
+    label: wan-uplink
+    role: tap
+    description: Client-facing ingress link (10.10.0.0/24)
+  tap-srv:
+    label: server-link
+    role: tap
+    description: Server-facing link (10.20.0.0/24)
+  tool-ids:
+    label: suricata-ids
+    role: tool
+    description: IDS sensor receiving VLAN-tagged web traffic
+  tool-zeek:
+    label: zeek-ndr
+    role: tool
+    description: Full-visibility NDR sensor
+  tool-stg:
+    label: staging-replay
+    role: tool
+    description: Shadow staging host receiving rewritten UDP/53 packets
+
+rules:
+  # Mirror HTTP (TCP/80) to IDS (with non-destructive VLAN 100 push) and Zeek, capped at 50mbit
+  - name: wan-web-inspect
+    src: tap-wan
+    direction: ingress
+    rate_limit:
+      rate: 50mbit
+    dst:
+      - intf: tool-ids
+        vlan:
+          push: 100
+      - tool-zeek
+    filters:
+      - proto: tcp
+        dst_port: 80
+
+  # Shadow UDP/53 packets to staging host with L2+L3 rewrite (MAC + IP + checksum recalc)
+  - name: dns-shadow-replay
+    src: tap-wan
+    direction: ingress
+    dst:
+      - intf: tool-stg
+        rewrite:
+          dst_mac: "52:54:00:50:00:53"
+          dst_ip: "10.50.0.53"
+    filters:
+      - proto: udp
+        dst_port: 53
+
+  # Audit all IPv4 return traffic from server to Zeek with VLAN 200 tag
+  - name: server-reply-audit
+    src: tap-srv
+    direction: ingress
+    dst:
+      - intf: tool-zeek
+        vlan:
+          push: 200
