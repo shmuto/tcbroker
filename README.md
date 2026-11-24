@@ -34,21 +34,34 @@ make build
 **2. Edit `tcbroker.yaml`**
 
 ```yaml
+ports:
+  eth0:
+    label: wan-uplink
+    role: tap
+  eth1:
+    label: suricata-ids
+    role: tool
+  eth2:
+    label: zeek-ndr
+    role: tool
+
 rules:
   # Minimal: mirror all IPv4 ingress packets from eth0 to eth1
   - name: mirror-all
     src: eth0
     dst: eth1
 
-  # Filter HTTP/HTTPS and mirror to multiple destinations
+  # Filter HTTP/HTTPS, tag with VLAN 100, and cap mirror rate at 500mbit
   - name: web-traffic
     src: eth0
     direction: ingress # ingress (default) | egress | both
+    rate_limit:
+      rate: 500mbit
     dst:
-      - eth1
-      - intf: eth2
-        rewrite:
-          dst_mac: "52:54:00:12:34:56"
+      - intf: eth1
+        vlan:
+          push: 100
+      - eth2
     filters:
       - proto: tcp
         dst_port: 80
@@ -84,11 +97,11 @@ sudo ./tcbroker stop
 
 | Command | Description |
 |---|---|
-| `tcbroker init [file]` | Generate a starter YAML configuration (`-` prints to stdout) |
+| `tcbroker init [file]` | Generate a starter YAML configuration (`-` prints to stdout; `-f`/`--force` overwrites) |
 | `tcbroker validate <config>` | Strictly validate YAML syntax/semantics (`--check-interfaces`) |
 | `tcbroker apply <config>` | Idempotently apply rules with rollback on error (alias: `start`; supports `--dry-run`) |
 | `tcbroker status [rule]` | Show rule health and counters (`--watch`/`-w`, `--interval`, `--json`, `--raw`, `--all`) |
-| `tcbroker delete [rule...]` | Delete specific rule(s) or all managed rules with `--all` (aliases: `stop`, `rm`; `stop` without args deletes all) |
+| `tcbroker delete [rule...]` | Delete specific rule(s) or all managed rules with `--all` (aliases: `stop`, `rm`; `stop` without args deletes all; supports `--dry-run`) |
 | `tcbroker serve` | Start embedded mini-NPB WebUI, REST API, and Prometheus `/metrics` (alias: `ui`; supports `--listen`, `--read-only`, `--token`, `--demo`) |
 | `tcbroker version` | Print version information |
 
@@ -110,11 +123,16 @@ sudo ./tcbroker serve --listen 127.0.0.1:8080 --token "$TCBROKER_API_TOKEN"
 ### Docker Usage (Minimal Privilege)
 
 ```sh
-# Persist /run/tcbroker so state survives across container runs
+# Apply rules (mount /run/tcbroker so state persists across container runs)
 docker run --rm --cap-add=NET_ADMIN --network host \
   -v /run/tcbroker:/run/tcbroker \
   -v $(pwd)/tcbroker.yaml:/config/tcbroker.yaml:ro \
   ghcr.io/shmuto/tcbroker:latest apply /config/tcbroker.yaml
+
+# Run the mini-NPB WebUI + /metrics in a container
+docker run --rm --cap-add=NET_ADMIN --network host \
+  -v /run/tcbroker:/run/tcbroker \
+  ghcr.io/shmuto/tcbroker:latest serve --listen 127.0.0.1:8080
 ```
 
 ### Global Flags
@@ -129,6 +147,7 @@ ports:                          # Optional: human-readable labels shown in statu
   eth0:
     label: wan-uplink
     role: tap                   # Optional: tap | tool
+    description: External tap   # Optional
   eth1:
     label: suricata-ids
     role: tool
@@ -171,9 +190,9 @@ rules:
 ## How It Works
 
 1. Ensures a `clsact` qdisc exists on each `src` interface and records whether `tcbroker` created it.
-2. Allocates dedicated `flower` filter priorities in `20000–29999` (skipping any priority already used by external tools) with explicit handles.
-3. Applies optional `skbmod` (MAC rewrite) and `pedit` + `csum` (IPv4 rewrite + checksum recalculation), followed by `mirred egress mirror ... continue`.
-4. Persists ownership metadata atomically to `/run/tcbroker/state.json` (mode `0644` so non-root users can run `status`).
+2. Allocates dedicated `flower` filter priorities in `20000–29999` (skipping any priority already used by external tools) with explicit handles (`0x1`).
+3. Applies optional `police` (`conform-exceed continue/pipe`, capping mirror bandwidth without dropping original traffic), `skbmod` (MAC rewrite), `pedit` + `csum ip4h` (IPv4 rewrite + checksum recalculation), and `vlan` (`push` → `mirred` → `pop` so original packets continue untagged), followed by `mirred egress mirror ... continue`.
+4. Persists ownership metadata atomically to `/run/tcbroker/state.json` (mode `0644` so non-root users can run `status` and `serve --read-only`).
 5. On `delete`/`stop`, removes only `tcbroker`-owned filters by priority/handle, and removes `clsact` only if `tcbroker` created it and no other filters remain.
 
 ## Testing
@@ -192,7 +211,8 @@ make docker-test
 ## Documentation
 
 - [Product Vision & Roadmap](docs/product-vision.md) - Mini-NPB positioning, deployment strategy, WebUI design, and phased roadmap
-- [Architecture](docs/architecture.md) - System design and diagrams
+- [Architecture](docs/architecture.md) - System design, TC packet pipeline, and reconciliation diagrams
+- [Changelog](CHANGELOG.md) - Release history
 
 ## License
 
