@@ -2,32 +2,44 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
-	"github.com/spf13/cobra"
 	"tcbroker/pkg/config"
 )
 
-var initForce bool
+func printInitUsage(w io.Writer) {
+	_, _ = fmt.Fprint(w, `Usage:
+  tcbroker init [output-file] [flags]
 
-var initCmd = &cobra.Command{
-	Use:   "init [output-file]",
-	Short: "Generate a starter tcbroker YAML configuration file",
-	Long: `Writes a documented starter configuration file.
-Defaults to ./tcbroker.yaml, or pass '-' to print to stdout.`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runInit,
+Writes a documented starter configuration file.
+Defaults to ./tcbroker.yaml, or pass '-' to print to stdout.
+
+Flags:
+  -f, --force               Overwrite output file if it already exists
+      --state-file string   Override state file path
+      --debug               Print all tc commands executed
+  -h, --help                Show help
+`)
 }
 
-func init() {
-	rootCmd.AddCommand(initCmd)
-	initCmd.Flags().BoolVarP(&initForce, "force", "f", false, "Overwrite output file if it already exists")
-}
+func cmdInit(_ string, args []string) error {
+	var force bool
+	fs := newFlagSet("init", printInitUsage)
+	fs.BoolVar(&force, "force", false, "Overwrite output file if it already exists")
+	fs.BoolVar(&force, "f", false, "Shorthand for --force")
 
-func runInit(cmd *cobra.Command, args []string) error {
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) > 1 {
+		return fmt.Errorf("expected at most 1 argument: [output-file] (run `tcbroker init --help` for usage)")
+	}
+
 	outPath := "tcbroker.yaml"
-	if len(args) == 1 {
-		outPath = args[0]
+	if len(pos) == 1 {
+		outPath = pos[0]
 	}
 
 	if outPath == "-" {
@@ -35,7 +47,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if !initForce {
+	if !force {
 		if _, err := os.Stat(outPath); err == nil {
 			return fmt.Errorf("file %q already exists (use --force to overwrite)", outPath)
 		}

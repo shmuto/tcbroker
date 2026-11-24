@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -10,45 +11,61 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/spf13/cobra"
 	"tcbroker/pkg/manager"
 	"tcbroker/pkg/state"
 	"tcbroker/pkg/tc"
 )
 
-var (
-	statusWatch    bool
-	statusInterval time.Duration
-	statusJSON     bool
-	statusRaw      bool
-	statusAll      bool
-)
+func printStatusUsage(w io.Writer) {
+	_, _ = fmt.Fprint(w, `Usage:
+  tcbroker status [rule-name] [flags]
 
-var statusCmd = &cobra.Command{
-	Use:   "status [rule-name]",
-	Short: "Show active mirroring rules, health, and traffic counters",
-	Long: `Displays the current status and packet/byte counters for tcbroker-managed rules
+Displays the current status and packet/byte counters for tcbroker-managed rules
 without requiring the original config file.
 
 Optionally pass a rule name to inspect per-filter details, or use --watch to
-monitor live packet and byte rates.`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runStatus,
+monitor live packet and byte rates.
+
+Flags:
+  -w, --watch               Continuously monitor status and live packet/byte rates
+      --interval duration   Refresh interval for --watch (default 1s)
+      --json                Output status as JSON
+      --raw                 Show raw 'tc -s filter show' output for managed interfaces
+      --all                 Show all TC qdiscs on the system
+      --state-file string   Override state file path
+      --debug               Print all tc commands executed
+  -h, --help                Show help
+`)
 }
 
-func init() {
-	rootCmd.AddCommand(statusCmd)
-	statusCmd.Flags().BoolVarP(&statusWatch, "watch", "w", false, "Continuously monitor status and live packet/byte rates")
-	statusCmd.Flags().DurationVar(&statusInterval, "interval", 1*time.Second, "Refresh interval for --watch")
-	statusCmd.Flags().BoolVar(&statusJSON, "json", false, "Output status as JSON")
-	statusCmd.Flags().BoolVar(&statusRaw, "raw", false, "Show raw `tc -s filter show` output for managed interfaces")
-	statusCmd.Flags().BoolVar(&statusAll, "all", false, "Show all TC qdiscs on the system")
-}
+func cmdStatus(_ string, args []string) error {
+	var (
+		watch    bool
+		interval time.Duration
+		asJSON   bool
+		raw      bool
+		all      bool
+	)
 
-func runStatus(cmd *cobra.Command, args []string) error {
+	fs := newFlagSet("status", printStatusUsage)
+	fs.BoolVar(&watch, "watch", false, "Continuously monitor status and live packet/byte rates")
+	fs.BoolVar(&watch, "w", false, "Shorthand for --watch")
+	fs.DurationVar(&interval, "interval", 1*time.Second, "Refresh interval for --watch")
+	fs.BoolVar(&asJSON, "json", false, "Output status as JSON")
+	fs.BoolVar(&raw, "raw", false, "Show raw tc -s filter show output for managed interfaces")
+	fs.BoolVar(&all, "all", false, "Show all TC qdiscs on the system")
+
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) > 1 {
+		return fmt.Errorf("expected at most 1 argument: [rule-name] (run `tcbroker status --help` for usage)")
+	}
+
 	runner := tc.NewRunner(flagDebug, false)
 
-	if statusAll {
+	if all {
 		out, err := runner.GetAllInterfaces()
 		if err != nil {
 			return err
@@ -58,22 +75,22 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if statusRaw {
+	if raw {
 		return printRawManagedTC(runner)
 	}
 
 	ruleFilter := ""
-	if len(args) == 1 {
-		ruleFilter = args[0]
+	if len(pos) == 1 {
+		ruleFilter = pos[0]
 	}
 
 	mgr := manager.New(runner, resolvedStatePath())
 
-	if statusWatch {
-		if statusInterval <= 0 {
+	if watch {
+		if interval <= 0 {
 			return fmt.Errorf("--interval must be greater than 0")
 		}
-		return watchStatus(mgr, ruleFilter, statusInterval)
+		return watchStatus(mgr, ruleFilter, interval, asJSON)
 	}
 
 	report, err := mgr.Status(ruleFilter)
@@ -81,7 +98,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if statusJSON {
+	if asJSON {
 		return printStatusJSON(report)
 	}
 
@@ -89,7 +106,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func watchStatus(mgr *manager.Manager, ruleFilter string, interval time.Duration) error {
+func watchStatus(mgr *manager.Manager, ruleFilter string, interval time.Duration, asJSON bool) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
@@ -107,12 +124,11 @@ func watchStatus(mgr *manager.Manager, ruleFilter string, interval time.Duration
 			return err
 		}
 
-		if statusJSON {
+		if asJSON {
 			if err := printStatusJSON(report); err != nil {
 				return err
 			}
 		} else {
-			// Clear screen and move cursor home
 			fmt.Print("\033[H\033[2J")
 			fmt.Printf("tcbroker status (refresh %s, %s) - press Ctrl+C to exit\n\n",
 				interval, now.Format("15:04:05"))
@@ -148,7 +164,6 @@ func renderStatusReport(report *manager.StatusReport, ruleFilter string, prev *m
 		return
 	}
 
-	// Detailed single-rule view
 	if ruleFilter != "" && len(report.Rules) == 1 {
 		renderRuleDetail(report.Rules[0], prev, elapsedSec)
 		return

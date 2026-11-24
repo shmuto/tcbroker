@@ -2,43 +2,53 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"tcbroker/pkg/config"
 	"tcbroker/pkg/manager"
 	"tcbroker/pkg/state"
 	"tcbroker/pkg/tc"
 )
 
-var applyDryRun bool
+func printApplyUsage(w io.Writer) {
+	_, _ = fmt.Fprint(w, `Usage:
+  tcbroker apply <config-file> [flags]
+  tcbroker start <config-file> [flags]
 
-var applyCmd = &cobra.Command{
-	Use:     "apply <config-file>",
-	Aliases: []string{"start"},
-	Short:   "Idempotently apply mirroring rules from a YAML config file",
-	Long: `Reads and validates the YAML configuration file, compares it against currently
+Reads and validates the YAML configuration file, compares it against currently
 managed TC filters, and applies only the necessary changes.
 
 Existing unchanged filters keep their counters intact. External TC filters and
 pre-existing clsact qdiscs are never modified or deleted. If any filter fails
-to apply, newly added filters are automatically rolled back.`,
-	Args: cobra.ExactArgs(1),
-	RunE: runApply,
+to apply, newly added filters are automatically rolled back.
+
+Flags:
+      --dry-run             Preview planned changes and tc commands without applying them
+      --state-file string   Override state file path
+      --debug               Print all tc commands executed
+  -h, --help                Show help
+`)
 }
 
-func init() {
-	rootCmd.AddCommand(applyCmd)
-	applyCmd.Flags().BoolVar(&applyDryRun, "dry-run", false, "Preview planned changes and tc commands without applying them")
-}
+func cmdApply(_ string, args []string) error {
+	var dryRun bool
+	fs := newFlagSet("apply", printApplyUsage)
+	fs.BoolVar(&dryRun, "dry-run", false, "Preview planned changes and tc commands without applying them")
 
-func runApply(cmd *cobra.Command, args []string) error {
-	configFile := args[0]
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return fmt.Errorf("expected exactly 1 argument: <config-file> (run `tcbroker apply --help` for usage)")
+	}
+	configFile := pos[0]
 
-	if !applyDryRun && os.Geteuid() != 0 {
+	if !dryRun && os.Geteuid() != 0 {
 		return fmt.Errorf("this command requires root privileges (use sudo, or pass --dry-run to preview)")
 	}
 
@@ -52,7 +62,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 	}
 
 	// Verify all referenced interfaces exist before mutating TC state.
-	if !applyDryRun {
+	if !dryRun {
 		var missing []string
 		for _, iface := range cfg.AllInterfaces() {
 			if _, errIface := net.InterfaceByName(iface); errIface != nil {
@@ -69,10 +79,10 @@ func runApply(cmd *cobra.Command, args []string) error {
 		absPath = configFile
 	}
 
-	runner := tc.NewRunner(flagDebug, applyDryRun)
+	runner := tc.NewRunner(flagDebug, dryRun)
 	mgr := manager.New(runner, resolvedStatePath())
 
-	if applyDryRun {
+	if dryRun {
 		plan, err := mgr.PlanApply(cfg, absPath)
 		if err != nil {
 			return err

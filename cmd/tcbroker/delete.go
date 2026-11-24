@@ -2,54 +2,57 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"tcbroker/pkg/manager"
 	"tcbroker/pkg/state"
 	"tcbroker/pkg/tc"
 )
 
-var (
-	deleteAll    bool
-	deleteDryRun bool
-)
+func printDeleteUsage(w io.Writer) {
+	_, _ = fmt.Fprint(w, `Usage:
+  tcbroker delete <rule-name...> [flags]
+  tcbroker delete --all [flags]
+  tcbroker stop [rule-name...] [flags]
 
-var deleteCmd = &cobra.Command{
-	Use:     "delete [rule-name...]",
-	Aliases: []string{"stop", "rm"},
-	Short:   "Remove tcbroker-managed mirroring rules without needing the config file",
-	Long: `Removes specific mirroring rules by name or all tcbroker-managed rules (--all).
+Removes specific mirroring rules by name or all tcbroker-managed rules (--all).
+Running 'tcbroker stop' with no arguments removes all managed rules.
 
 Only TC filters installed by tcbroker are deleted. External TC filters and
 pre-existing clsact qdiscs are left untouched.
 
-Examples:
-  sudo tcbroker delete web-traffic       # Remove a single rule
-  sudo tcbroker delete --all             # Remove all tcbroker rules
-  sudo tcbroker stop                     # Shorthand for 'delete --all'`,
-	RunE: runDelete,
+Flags:
+      --all                 Delete all tcbroker-managed rules
+      --dry-run             Preview deletions and tc commands without executing them
+      --state-file string   Override state file path
+      --debug               Print all tc commands executed
+  -h, --help                Show help
+`)
 }
 
-func init() {
-	rootCmd.AddCommand(deleteCmd)
-	deleteCmd.Flags().BoolVar(&deleteAll, "all", false, "Delete all tcbroker-managed rules")
-	deleteCmd.Flags().BoolVar(&deleteDryRun, "dry-run", false, "Preview deletions and tc commands without executing them")
-}
+func cmdDelete(calledAs string, args []string) error {
+	var all, dryRun bool
+	fs := newFlagSet("delete", printDeleteUsage)
+	fs.BoolVar(&all, "all", false, "Delete all tcbroker-managed rules")
+	fs.BoolVar(&dryRun, "dry-run", false, "Preview deletions and tc commands without executing them")
 
-func runDelete(cmd *cobra.Command, args []string) error {
-	all := deleteAll
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return err
+	}
+
 	// `tcbroker stop` with no args intuitively stops all managed rules.
-	if cmd.CalledAs() == "stop" && len(args) == 0 {
+	if calledAs == "stop" && len(pos) == 0 {
 		all = true
 	}
 
-	if all && len(args) > 0 {
+	if all && len(pos) > 0 {
 		return fmt.Errorf("cannot specify both rule names and --all")
 	}
 
-	if !all && len(args) == 0 {
+	if !all && len(pos) == 0 {
 		st, err := state.Load(resolvedStatePath())
 		if err != nil {
 			return err
@@ -61,14 +64,14 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("specify rule name(s) to delete or use --all (active rules: %s)", strings.Join(st.RuleNames(), ", "))
 	}
 
-	if !deleteDryRun && os.Geteuid() != 0 {
+	if !dryRun && os.Geteuid() != 0 {
 		return fmt.Errorf("this command requires root privileges (use sudo, or pass --dry-run to preview)")
 	}
 
-	runner := tc.NewRunner(flagDebug, deleteDryRun)
+	runner := tc.NewRunner(flagDebug, dryRun)
 	mgr := manager.New(runner, resolvedStatePath())
 
-	res, err := mgr.Delete(args, all)
+	res, err := mgr.Delete(pos, all)
 	if err != nil {
 		return err
 	}
@@ -78,7 +81,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if deleteDryRun {
+	if dryRun {
 		fmt.Printf("[dry-run] Would delete %d filter(s) from rule(s): %s\n",
 			len(res.DeletedFilters), strings.Join(res.DeletedRules, ", "))
 		return nil

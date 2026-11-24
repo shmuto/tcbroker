@@ -2,32 +2,42 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"tcbroker/pkg/config"
 )
 
-var checkInterfaces bool
+func printValidateUsage(w io.Writer) {
+	_, _ = fmt.Fprint(w, `Usage:
+  tcbroker validate <config-file> [flags]
 
-var validateCmd = &cobra.Command{
-	Use:   "validate <config-file>",
-	Short: "Validate a configuration file without applying it",
-	Long: `Reads and strictly validates the YAML configuration file, checking for
-unknown fields, syntax errors, logical errors (such as missing proto for port filters
-or self-mirror loops), and optionally verifying that interfaces exist on the system.`,
-	Args: cobra.ExactArgs(1),
-	RunE: runValidate,
+Reads and strictly validates the YAML configuration file, checking for
+unknown fields, syntax errors, logical errors (such as missing proto for port
+filters or self-mirror loops), and optionally verifying that interfaces exist.
+
+Flags:
+      --check-interfaces    Verify that specified network interfaces exist on the system
+      --state-file string   Override state file path
+      --debug               Print all tc commands executed
+  -h, --help                Show help
+`)
 }
 
-func init() {
-	rootCmd.AddCommand(validateCmd)
-	validateCmd.Flags().BoolVar(&checkInterfaces, "check-interfaces", false, "Verify that specified network interfaces exist on the system")
-}
+func cmdValidate(_ string, args []string) error {
+	var checkInterfaces bool
+	fs := newFlagSet("validate", printValidateUsage)
+	fs.BoolVar(&checkInterfaces, "check-interfaces", false, "Verify that specified network interfaces exist on the system")
 
-func runValidate(cmd *cobra.Command, args []string) error {
-	configFile := args[0]
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return fmt.Errorf("expected exactly 1 argument: <config-file> (run `tcbroker validate --help` for usage)")
+	}
+	configFile := pos[0]
 
 	fmt.Printf("Validating %s...\n", configFile)
 
