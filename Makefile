@@ -83,7 +83,29 @@ docker-clean:
 	@echo "Cleaning up Docker environment (requires sudo)..."
 	@sudo ./tests/setup.sh down
 
+# Self-contained real Linux TC playground (works on Linux, macOS, Windows via Docker)
+PLAYGROUND_COMPOSE=docker compose -f playground/compose.yaml
+
+playground:
+	$(PLAYGROUND_COMPOSE) up --build
+
+playground-up:
+	$(PLAYGROUND_COMPOSE) up -d --build
+
+playground-down:
+	$(PLAYGROUND_COMPOSE) down
+
+playground-capture-ids:
+	docker exec -it tcbroker-playground ip netns exec ids tcpdump -i ids0 -e -nn -c 10
+
+playground-capture-stg:
+	docker exec -it tcbroker-playground ip netns exec stg tcpdump -i stg0 -e -nn -c 10
+
+playground-shell:
+	docker exec -it tcbroker-playground bash
+
 .PHONY: all build test clean \
 	docker-build docker-up docker-down docker-restart docker-rebuild \
 	docker-shell docker-logs docker-test docker-test-interactive docker-ps \
-	docker-setup-veth docker-cleanup-veth docker-clean
+	docker-setup-veth docker-cleanup-veth docker-clean \
+	playground playground-up playground-down playground-capture-ids playground-capture-stg playground-shell

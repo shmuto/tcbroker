@@ -105,6 +105,29 @@ sudo ./tcbroker stop
 | `tcbroker serve` | Start embedded mini-NPB WebUI, REST API, and Prometheus `/metrics` (alias: `ui`; supports `--listen`, `--read-only`, `--token`, `--demo`) |
 | `tcbroker version` | Print version information |
 
+### Try It Live with Real Linux TC (Docker Playground)
+
+Want to see real Linux kernel TC mirroring, VLAN tagging, MAC/IP rewriting, and live WebUI counters without modifying your host network? Run the self-contained single-container playground (uses internal `ip netns`, so it works identically on **Linux, macOS, and Windows** with Docker alone — no Containerlab or host `sudo` needed):
+
+```sh
+# Build and start the real Linux TC playground (WebUI at http://localhost:8080)
+make playground
+# or: docker compose -f playground/compose.yaml up --build
+```
+
+While running, inspect real mirrored packets in another terminal:
+
+```sh
+# See VLAN 100 tagged HTTP packets arriving at the IDS namespace
+docker exec -it tcbroker-playground ip netns exec ids tcpdump -i ids0 -e -nn -c 10
+
+# See MAC/IP rewritten UDP/53 packets arriving at the staging namespace
+docker exec -it tcbroker-playground ip netns exec stg tcpdump -i stg0 -e -nn -c 10
+
+# Run CLI commands directly against live kernel TC
+docker exec -it tcbroker-playground tcbroker status --watch
+```
+
 ### Mini-NPB WebUI & Prometheus Metrics
 
 `tcbroker` embeds a zero-dependency WebUI (`go:embed`, no external CDN) and Prometheus `/metrics` endpoint in the same single binary:

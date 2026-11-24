@@ -1,0 +1,12 @@
+services:
+  playground:
+    build:
+      context: ..
+      dockerfile: playground/Dockerfile
+    container_name: tcbroker-playground
+    privileged: true
+    ports:
+      - "8080:8080"
+    environment:
+      - TRAFFIC_INTERVAL=0.4
+    stop_grace_period: 2s
