@@ -8,11 +8,19 @@ import (
 	"tcbroker/pkg/filter"
 )
 
-// ExportConfig reconstructs a declarative config.Config from the currently persisted filters.
-// This enables editing, exporting YAML, and reconciling drift even without the original file.
+// ExportConfig reconstructs a declarative config.Config from the currently persisted filters and ports.
 func (s *State) ExportConfig() *config.Config {
 	cfg := &config.Config{Rules: []config.Rule{}}
-	if s == nil || len(s.Filters) == 0 {
+	if s == nil {
+		return cfg
+	}
+	if len(s.Ports) > 0 {
+		cfg.Ports = make(map[string]config.PortConfig, len(s.Ports))
+		for k, v := range s.Ports {
+			cfg.Ports[k] = v
+		}
+	}
+	if len(s.Filters) == 0 {
 		return cfg
 	}
 
@@ -47,15 +55,26 @@ func (s *State) ExportConfig() *config.Config {
 			rb.hasOut = true
 		}
 
-		// Deduplicate destination + rewrite pair
 		dst := config.Destination{Intf: mf.DstIntf}
 		if !mf.Rewrite.IsEmpty() {
 			rwCopy := *mf.Rewrite
 			dst.Rewrite = &rwCopy
 		}
+		if !mf.VLAN.IsEmpty() {
+			vCopy := *mf.VLAN
+			dst.VLAN = &vCopy
+		}
+		if !mf.RateLimit.IsEmpty() {
+			rlCopy := *mf.RateLimit
+			dst.RateLimit = &rlCopy
+		}
+
 		foundDst := false
 		for _, existing := range rb.dsts {
-			if existing.Intf == dst.Intf && reflect.DeepEqual(existing.Rewrite, dst.Rewrite) {
+			if existing.Intf == dst.Intf &&
+				reflect.DeepEqual(existing.Rewrite, dst.Rewrite) &&
+				reflect.DeepEqual(existing.VLAN, dst.VLAN) &&
+				reflect.DeepEqual(existing.RateLimit, dst.RateLimit) {
 				foundDst = true
 				break
 			}
@@ -64,7 +83,6 @@ func (s *State) ExportConfig() *config.Config {
 			rb.dsts = append(rb.dsts, dst)
 		}
 
-		// Deduplicate filters
 		if mf.Filter == (filter.Filter{}) {
 			rb.allFilter = true
 		} else {
@@ -109,7 +127,7 @@ func (s *State) ExportConfig() *config.Config {
 // ExportYAML renders the reconstructed Config as formatted YAML.
 func (s *State) ExportYAML() (string, error) {
 	cfg := s.ExportConfig()
-	if len(cfg.Rules) == 0 {
+	if len(cfg.Rules) == 0 && len(cfg.Ports) == 0 {
 		return "rules: []\n", nil
 	}
 	out, err := yaml.Marshal(cfg)

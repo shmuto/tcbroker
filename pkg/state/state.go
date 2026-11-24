@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"tcbroker/pkg/config"
 	"tcbroker/pkg/filter"
 )
 
@@ -37,11 +38,12 @@ func ResolveStatePath(flagPath string) string {
 
 // State persists the TC resources actively managed by tcbroker.
 type State struct {
-	Version       int                     `json:"version"`
-	ConfigPath    string                  `json:"config_path,omitempty"`
-	UpdatedAt     time.Time               `json:"updated_at"`
-	ManagedQdiscs map[string]ManagedQdisc `json:"managed_qdiscs"`
-	Filters       []ManagedFilter         `json:"filters"`
+	Version       int                          `json:"version"`
+	ConfigPath    string                       `json:"config_path,omitempty"`
+	UpdatedAt     time.Time                    `json:"updated_at"`
+	Ports         map[string]config.PortConfig `json:"ports,omitempty"`
+	ManagedQdiscs map[string]ManagedQdisc      `json:"managed_qdiscs"`
+	Filters       []ManagedFilter              `json:"filters"`
 }
 
 // ManagedQdisc tracks whether tcbroker originally created a clsact qdisc on an interface.
@@ -51,21 +53,24 @@ type ManagedQdisc struct {
 
 // ManagedFilter represents a single TC flower filter installed and owned by tcbroker.
 type ManagedFilter struct {
-	RuleName string                 `json:"rule_name"`
-	SrcIntf  string                 `json:"src_intf"`
-	Hook     string                 `json:"hook"` // "ingress" or "egress"
-	DstIntf  string                 `json:"dst_intf"`
-	Pref     int                    `json:"pref"`
-	Handle   string                 `json:"handle"`
-	Filter   filter.Filter          `json:"filter"`
-	Rewrite  *filter.RewriteOptions `json:"rewrite,omitempty"`
-	SpecHash string                 `json:"spec_hash"`
+	RuleName  string                   `json:"rule_name"`
+	SrcIntf   string                   `json:"src_intf"`
+	Hook      string                   `json:"hook"` // "ingress" or "egress"
+	DstIntf   string                   `json:"dst_intf"`
+	Pref      int                      `json:"pref"`
+	Handle    string                   `json:"handle"`
+	Filter    filter.Filter            `json:"filter"`
+	Rewrite   *filter.RewriteOptions   `json:"rewrite,omitempty"`
+	VLAN      *filter.VLANOptions      `json:"vlan,omitempty"`
+	RateLimit *filter.RateLimitOptions `json:"rate_limit,omitempty"`
+	SpecHash  string                   `json:"spec_hash"`
 }
 
 // NewEmpty creates an initialized empty State.
 func NewEmpty() *State {
 	return &State{
 		Version:       CurrentStateVersion,
+		Ports:         make(map[string]config.PortConfig),
 		ManagedQdiscs: make(map[string]ManagedQdisc),
 		Filters:       []ManagedFilter{},
 	}
@@ -73,24 +78,39 @@ func NewEmpty() *State {
 
 // ComputeSpecHash deterministically hashes the functional specification of a TC filter
 // (excluding pref/handle and rule name) so unchanged rules can be detected cleanly.
-func ComputeSpecHash(srcIntf, hook, dstIntf string, f filter.Filter, rw *filter.RewriteOptions) string {
+func ComputeSpecHash(srcIntf, hook, dstIntf string, f filter.Filter, rw *filter.RewriteOptions, vlan *filter.VLANOptions, rl *filter.RateLimitOptions) string {
 	type hashInput struct {
-		SrcIntf string                 `json:"src_intf"`
-		Hook    string                 `json:"hook"`
-		DstIntf string                 `json:"dst_intf"`
-		Filter  filter.Filter          `json:"filter"`
-		Rewrite *filter.RewriteOptions `json:"rewrite,omitempty"`
+		SrcIntf   string                   `json:"src_intf"`
+		Hook      string                   `json:"hook"`
+		DstIntf   string                   `json:"dst_intf"`
+		Filter    filter.Filter            `json:"filter"`
+		Rewrite   *filter.RewriteOptions   `json:"rewrite,omitempty"`
+		VLAN      *filter.VLANOptions      `json:"vlan,omitempty"`
+		RateLimit *filter.RateLimitOptions `json:"rate_limit,omitempty"`
 	}
 	var normRW *filter.RewriteOptions
 	if !rw.IsEmpty() {
 		normRW = rw
 	}
+	var normVLAN *filter.VLANOptions
+	if !vlan.IsEmpty() {
+		normVLAN = vlan
+	}
+	var normRL *filter.RateLimitOptions
+	if !rl.IsEmpty() {
+		normRL = &filter.RateLimitOptions{
+			Rate:  rl.Rate,
+			Burst: rl.EffectiveBurst(),
+		}
+	}
 	raw, _ := json.Marshal(hashInput{
-		SrcIntf: srcIntf,
-		Hook:    hook,
-		DstIntf: dstIntf,
-		Filter:  f,
-		Rewrite: normRW,
+		SrcIntf:   srcIntf,
+		Hook:      hook,
+		DstIntf:   dstIntf,
+		Filter:    f,
+		Rewrite:   normRW,
+		VLAN:      normVLAN,
+		RateLimit: normRL,
 	})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:8])
@@ -109,6 +129,9 @@ func Load(path string) (*State, error) {
 	var st State
 	if err := json.Unmarshal(data, &st); err != nil {
 		return nil, fmt.Errorf("failed to parse state file %s: %w", path, err)
+	}
+	if st.Ports == nil {
+		st.Ports = make(map[string]config.PortConfig)
 	}
 	if st.ManagedQdiscs == nil {
 		st.ManagedQdiscs = make(map[string]ManagedQdisc)

@@ -23,12 +23,53 @@ type RewriteOptions struct {
 	SrcIP  string `yaml:"src_ip,omitempty" json:"src_ip,omitempty"`   // Source IPv4 address
 }
 
+// VLANOptions specifies 802.1Q VLAN tag operations for mirrored traffic.
+// When Push is set, the tag is pushed before mirroring and popped afterward so the
+// original packet continues through the host unmodified.
+type VLANOptions struct {
+	Push int  `yaml:"push,omitempty" json:"push,omitempty"` // 802.1Q VLAN ID (1-4094) to push on mirrored copy
+	Pop  bool `yaml:"pop,omitempty" json:"pop,omitempty"`   // Strip outer 802.1Q VLAN tag before mirroring
+}
+
+// RateLimitOptions caps mirrored bandwidth using TC police without dropping original traffic.
+type RateLimitOptions struct {
+	Rate  string `yaml:"rate,omitempty" json:"rate,omitempty"`   // Bandwidth cap (e.g. "100mbit", "1gbit")
+	Burst string `yaml:"burst,omitempty" json:"burst,omitempty"` // Token bucket burst (optional; default "1mb")
+}
+
 // IsEmpty returns true if no rewrite fields are configured.
 func (r *RewriteOptions) IsEmpty() bool {
 	if r == nil {
 		return true
 	}
 	return r.DstMAC == "" && r.SrcMAC == "" && r.DstIP == "" && r.SrcIP == ""
+}
+
+// IsEmpty returns true if no VLAN operation is configured.
+func (v *VLANOptions) IsEmpty() bool {
+	if v == nil {
+		return true
+	}
+	return v.Push == 0 && !v.Pop
+}
+
+// IsEmpty returns true if no rate limit is configured.
+func (rl *RateLimitOptions) IsEmpty() bool {
+	if rl == nil {
+		return true
+	}
+	return rl.Rate == "" && rl.Burst == ""
+}
+
+// EffectiveBurst returns Burst if set, or a sensible default ("1mb") when Rate is configured.
+func (rl *RateLimitOptions) EffectiveBurst() string {
+	if rl == nil || rl.Rate == "" {
+		return ""
+	}
+	if rl.Burst != "" {
+		return rl.Burst
+	}
+	return "1mb"
 }
 
 // Summary returns a concise human-readable description of the filter match criteria.
@@ -74,4 +115,23 @@ func (r *RewriteOptions) Summary() string {
 		parts = append(parts, "sip="+r.SrcIP)
 	}
 	return strings.Join(parts, ",")
+}
+
+// Summary returns a concise human-readable description of the VLAN option.
+func (v *VLANOptions) Summary() string {
+	if v.IsEmpty() {
+		return ""
+	}
+	if v.Push > 0 {
+		return fmt.Sprintf("vlan:+%d", v.Push)
+	}
+	return "vlan:pop"
+}
+
+// Summary returns a concise human-readable description of the rate limit option.
+func (rl *RateLimitOptions) Summary() string {
+	if rl.IsEmpty() {
+		return ""
+	}
+	return "cap:" + rl.Rate
 }

@@ -146,7 +146,7 @@
               <th>State</th>
               <th>Path</th>
               <th>Match</th>
-              <th>Rewrite</th>
+              <th>Actions</th>
               <th class="num">Packets</th>
               <th class="num">Bytes</th>
               <th class="num">PPS</th>
@@ -229,7 +229,17 @@
         </fieldset>
 
         <fieldset class="fieldset">
-          <legend>Optional Header Rewrite</legend>
+          <legend>NPB Packet Conditioning <small>(optional)</small></legend>
+          <div class="form-row-2">
+            <label class="field">
+              <span>VLAN Tag Push ID <small>(1–4094)</small></span>
+              <input id="f-vlan-push" name="vlan_push" type="number" min="1" max="4094" placeholder="e.g. 100">
+            </label>
+            <label class="field">
+              <span>Mirror Rate Cap <small>(non-dropping)</small></span>
+              <input id="f-rate-limit" name="rate_limit" type="text" placeholder="e.g. 500mbit">
+            </label>
+          </div>
           <div class="form-row-2">
             <label class="field">
               <span>Rewrite Dst MAC</span>

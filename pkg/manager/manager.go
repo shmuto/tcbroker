@@ -2,6 +2,7 @@ package manager
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 
 	"tcbroker/pkg/config"
@@ -43,6 +44,7 @@ type ifaceHook struct {
 // ApplyPlan describes the exact TC filter changes required to reconcile desired config.
 type ApplyPlan struct {
 	ConfigPath    string
+	Ports         map[string]config.PortConfig
 	Kept          []state.ManagedFilter
 	ToAdd         []state.ManagedFilter
 	ToDelete      []state.ManagedFilter
@@ -109,9 +111,10 @@ type RuleStatus struct {
 
 // StatusReport contains the full runtime status of all tcbroker-managed rules.
 type StatusReport struct {
-	StatePath  string       `json:"state_path"`
-	ConfigPath string       `json:"config_path,omitempty"`
-	Rules      []RuleStatus `json:"rules"`
+	StatePath  string                       `json:"state_path"`
+	ConfigPath string                       `json:"config_path,omitempty"`
+	Ports      map[string]config.PortConfig `json:"ports,omitempty"`
+	Rules      []RuleStatus                 `json:"rules"`
 }
 
 // HasDrift returns true if any managed rule has missing filters in the kernel.
@@ -138,16 +141,30 @@ func expandConfig(cfg *config.Config) []state.ManagedFilter {
 					c := *rw
 					rwCopy = &c
 				}
+				vlan := rule.EffectiveVLAN(dst)
+				var vlanCopy *filter.VLANOptions
+				if !vlan.IsEmpty() {
+					c := *vlan
+					vlanCopy = &c
+				}
+				rl := rule.EffectiveRateLimit(dst)
+				var rlCopy *filter.RateLimitOptions
+				if !rl.IsEmpty() {
+					c := *rl
+					rlCopy = &c
+				}
 				for _, f := range filters {
 					out = append(out, state.ManagedFilter{
-						RuleName: rule.Name,
-						SrcIntf:  rule.Src,
-						Hook:     hook,
-						DstIntf:  dst.Intf,
-						Handle:   DefaultHandle,
-						Filter:   f,
-						Rewrite:  rwCopy,
-						SpecHash: state.ComputeSpecHash(rule.Src, hook, dst.Intf, f, rwCopy),
+						RuleName:  rule.Name,
+						SrcIntf:   rule.Src,
+						Hook:      hook,
+						DstIntf:   dst.Intf,
+						Handle:    DefaultHandle,
+						Filter:    f,
+						Rewrite:   rwCopy,
+						VLAN:      vlanCopy,
+						RateLimit: rlCopy,
+						SpecHash:  state.ComputeSpecHash(rule.Src, hook, dst.Intf, f, rwCopy, vlanCopy, rlCopy),
 					})
 				}
 			}
@@ -191,6 +208,7 @@ func (m *Manager) PlanApply(cfg *config.Config, configPath string) (*ApplyPlan, 
 
 	plan := &ApplyPlan{
 		ConfigPath:    configPath,
+		Ports:         clonePorts(cfg.Ports),
 		ManagedQdiscs: make(map[string]state.ManagedQdisc),
 	}
 	for k, v := range curState.ManagedQdiscs {
@@ -305,11 +323,12 @@ func (m *Manager) Apply(cfg *config.Config, configPath string) (*ApplyResult, er
 	}
 
 	if !plan.HasChanges() && plan.DriftedCount == 0 {
-		// Still ensure state reflects configPath if state didn't exist or configPath changed.
+		// Still ensure state reflects updated configPath or port labels even when TC filters didn't change.
 		if !m.Runner.DryRun {
 			curState, loadErr := state.Load(m.StatePath)
-			if loadErr == nil && curState.ConfigPath != configPath {
+			if loadErr == nil && (curState.ConfigPath != configPath || !reflect.DeepEqual(curState.Ports, plan.Ports)) {
 				curState.ConfigPath = configPath
+				curState.Ports = plan.Ports
 				_ = state.Save(m.StatePath, curState)
 			}
 		}
@@ -337,13 +356,15 @@ func (m *Manager) Apply(cfg *config.Config, configPath string) (*ApplyResult, er
 	var addedSoFar []state.ManagedFilter
 	for _, f := range plan.ToAdd {
 		spec := filter.BuildSpec{
-			SrcIntf: f.SrcIntf,
-			Hook:    f.Hook,
-			Pref:    f.Pref,
-			Handle:  f.Handle,
-			DstIntf: f.DstIntf,
-			Filter:  f.Filter,
-			Rewrite: f.Rewrite,
+			SrcIntf:   f.SrcIntf,
+			Hook:      f.Hook,
+			Pref:      f.Pref,
+			Handle:    f.Handle,
+			DstIntf:   f.DstIntf,
+			Filter:    f.Filter,
+			Rewrite:   f.Rewrite,
+			VLAN:      f.VLAN,
+			RateLimit: f.RateLimit,
 		}
 		if addErr := m.Runner.AddFilter(spec); addErr != nil {
 			// Roll back newly added filters in reverse order.
@@ -395,6 +416,7 @@ func (m *Manager) Apply(cfg *config.Config, configPath string) (*ApplyResult, er
 	// Step 5: Persist updated state atomically.
 	nextState := &state.State{
 		ConfigPath:    configPath,
+		Ports:         plan.Ports,
 		ManagedQdiscs: plan.ManagedQdiscs,
 		Filters:       plan.NextFilters,
 	}
@@ -514,6 +536,7 @@ func (m *Manager) Status(ruleNameFilter string) (*StatusReport, error) {
 	report := &StatusReport{
 		StatePath:  m.StatePath,
 		ConfigPath: curState.ConfigPath,
+		Ports:      clonePorts(curState.Ports),
 		Rules:      []RuleStatus{},
 	}
 
@@ -600,10 +623,10 @@ func (m *Manager) Status(ruleNameFilter string) (*StatusReport, error) {
 
 	for _, name := range ruleOrder {
 		rs := ruleMap[name]
-		switch {
-		case rs.ActiveFilters == rs.TotalFilters:
+		switch rs.ActiveFilters {
+		case rs.TotalFilters:
 			rs.Health = HealthActive
-		case rs.ActiveFilters == 0:
+		case 0:
 			rs.Health = HealthMissing
 		default:
 			rs.Health = HealthPartial
@@ -612,6 +635,17 @@ func (m *Manager) Status(ruleNameFilter string) (*StatusReport, error) {
 	}
 
 	return report, nil
+}
+
+func clonePorts(src map[string]config.PortConfig) map[string]config.PortConfig {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]config.PortConfig, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }
 
 func (m *Manager) cleanupQdiscIfSafe(iface string, createdByTCBroker bool) error {

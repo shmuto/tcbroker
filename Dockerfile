@@ -1,37 +1,30 @@
 # Multi-stage build for tcbroker
-# Stage 1: Build the binary
+# Stage 1: Build static binary with embedded mini-NPB WebUI
 FROM golang:1.24-alpine AS builder
 
 WORKDIR /build
 
-# Copy go mod files
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
 COPY . .
 
-# Build static binary
-RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o tcbroker ./cmd/tcbroker
+RUN VERSION=$(cat VERSION) && \
+    CGO_ENABLED=0 GOOS=linux go build -buildvcs=false \
+      -ldflags="-w -s -X main.version=${VERSION}" \
+      -o tcbroker ./cmd/tcbroker
 
-# Stage 2: Runtime image
+# Stage 2: Minimal runtime image
 FROM alpine:latest
 
-# Install iproute2 for tc command
+# iproute2 provides the `tc` utility required for Linux Traffic Control operations
 RUN apk add --no-cache iproute2
 
-# Copy binary from builder
 COPY --from=builder /build/tcbroker /usr/local/bin/tcbroker
-
-# Create non-root user (though tc requires root privileges)
-RUN addgroup -g 1000 tcbroker && \
-    adduser -D -u 1000 -G tcbroker tcbroker
 
 WORKDIR /config
 
-# tcbroker requires root for tc operations, but we set the user for better security practice
-# User can override with --user root when running container
-USER root
-
+# TC operations require CAP_NET_ADMIN (run with --cap-add=NET_ADMIN --network host
+# and mount /run/tcbroker:/run/tcbroker to persist runtime state)
 ENTRYPOINT ["/usr/local/bin/tcbroker"]
 CMD ["--help"]

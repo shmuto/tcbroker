@@ -31,7 +31,7 @@ func TestLoadSaveRoundTrip(t *testing.T) {
 		Pref:     20000,
 		Handle:   "0x1",
 		Filter:   filter.Filter{Proto: "tcp", DstPort: 80},
-		SpecHash: ComputeSpecHash("eth0", "ingress", "eth1", filter.Filter{Proto: "tcp", DstPort: 80}, nil),
+		SpecHash: ComputeSpecHash("eth0", "ingress", "eth1", filter.Filter{Proto: "tcp", DstPort: 80}, nil, nil, nil),
 	})
 
 	if err := Save(path, st); err != nil {
@@ -64,13 +64,21 @@ func TestLoadSaveRoundTrip(t *testing.T) {
 
 func TestComputeSpecHash_Deterministic(t *testing.T) {
 	f := filter.Filter{Proto: "udp", DstPort: 53}
-	h1 := ComputeSpecHash("eth0", "ingress", "eth1", f, nil)
-	h2 := ComputeSpecHash("eth0", "ingress", "eth1", f, &filter.RewriteOptions{})
+	h1 := ComputeSpecHash("eth0", "ingress", "eth1", f, nil, nil, nil)
+	h2 := ComputeSpecHash("eth0", "ingress", "eth1", f, &filter.RewriteOptions{}, &filter.VLANOptions{}, &filter.RateLimitOptions{})
 	if h1 != h2 {
-		t.Errorf("Empty rewrite should hash identically to nil rewrite: %s != %s", h1, h2)
+		t.Errorf("Empty optional structs should hash identically to nil: %s != %s", h1, h2)
 	}
-	h3 := ComputeSpecHash("eth0", "ingress", "eth1", f, &filter.RewriteOptions{DstMAC: "aa:bb:cc:dd:ee:ff"})
+	h3 := ComputeSpecHash("eth0", "ingress", "eth1", f, &filter.RewriteOptions{DstMAC: "aa:bb:cc:dd:ee:ff"}, nil, nil)
 	if h1 == h3 {
 		t.Errorf("Non-empty rewrite should produce a different hash")
+	}
+	h4 := ComputeSpecHash("eth0", "ingress", "eth1", f, nil, &filter.VLANOptions{Push: 100}, nil)
+	if h1 == h4 {
+		t.Errorf("VLAN push should produce a different hash")
+	}
+	h5 := ComputeSpecHash("eth0", "ingress", "eth1", f, nil, nil, &filter.RateLimitOptions{Rate: "100mbit"})
+	if h1 == h5 {
+		t.Errorf("RateLimit should produce a different hash")
 	}
 }

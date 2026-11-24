@@ -49,6 +49,17 @@ func Parse(data []byte) (*Config, error) {
 }
 
 func (c *Config) normalize() {
+	if len(c.Ports) > 0 {
+		normalized := make(map[string]PortConfig, len(c.Ports))
+		for k, v := range c.Ports {
+			v.Label = strings.TrimSpace(v.Label)
+			v.Role = strings.ToLower(strings.TrimSpace(v.Role))
+			v.Description = strings.TrimSpace(v.Description)
+			normalized[strings.TrimSpace(k)] = v
+		}
+		c.Ports = normalized
+	}
+
 	for i := range c.Rules {
 		r := &c.Rules[i]
 		r.Name = strings.TrimSpace(r.Name)
@@ -57,11 +68,13 @@ func (c *Config) normalize() {
 		if r.Direction == "" {
 			r.Direction = "ingress"
 		}
+		normalizeRewrite(r.Rewrite)
+		normalizeRateLimit(r.RateLimit)
 		for j := range r.Dst {
 			r.Dst[j].Intf = strings.TrimSpace(r.Dst[j].Intf)
 			normalizeRewrite(r.Dst[j].Rewrite)
+			normalizeRateLimit(r.Dst[j].RateLimit)
 		}
-		normalizeRewrite(r.Rewrite)
 		for j := range r.Filters {
 			r.Filters[j].Proto = strings.ToLower(strings.TrimSpace(r.Filters[j].Proto))
 			r.Filters[j].SrcIP = strings.TrimSpace(r.Filters[j].SrcIP)
@@ -78,4 +91,12 @@ func normalizeRewrite(rw *filter.RewriteOptions) {
 	rw.SrcMAC = strings.ToLower(strings.TrimSpace(rw.SrcMAC))
 	rw.DstIP = strings.TrimSpace(rw.DstIP)
 	rw.SrcIP = strings.TrimSpace(rw.SrcIP)
+}
+
+func normalizeRateLimit(rl *filter.RateLimitOptions) {
+	if rl == nil {
+		return
+	}
+	rl.Rate = strings.ToLower(strings.TrimSpace(rl.Rate))
+	rl.Burst = strings.ToLower(strings.TrimSpace(rl.Burst))
 }

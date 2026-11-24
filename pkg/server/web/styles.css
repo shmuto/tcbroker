@@ -474,6 +474,13 @@ html, body {
   white-space: nowrap;
 }
 
+.node-sublabel {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+
 .node-meta {
   margin-top: 4px;
   display: flex;
@@ -505,6 +512,18 @@ html, body {
   background: #eff6ff;
   border-color: #dbeafe;
   color: #1e40af;
+}
+
+.chip-vlan {
+  background: #f0fdfa;
+  border-color: #99f6e4;
+  color: #0f766e;
+}
+
+.chip-cap {
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+  color: var(--warn);
 }
 
 /* Status Pills */

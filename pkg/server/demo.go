@@ -58,13 +58,21 @@ func DemoInterfaces() []InterfaceInfo {
 // DemoInitialConfig returns a realistic mini-NPB starter config for demo mode.
 func DemoInitialConfig() *config.Config {
 	return &config.Config{
+		Ports: map[string]config.PortConfig{
+			"eth0":      {Label: "wan-uplink", Role: "tap"},
+			"eth2":      {Label: "dmz-tap", Role: "tap"},
+			"tap-ids0":  {Label: "suricata-ids", Role: "tool"},
+			"tap-zeek0": {Label: "zeek-ndr", Role: "tool"},
+			"tap-stg0":  {Label: "staging-replay", Role: "tool"},
+		},
 		Rules: []config.Rule{
 			{
 				Name:      "wan-web-inspect",
 				Src:       "eth0",
 				Direction: "ingress",
+				RateLimit: &filter.RateLimitOptions{Rate: "500mbit"},
 				Dst: config.Destinations{
-					{Intf: "tap-ids0"},
+					{Intf: "tap-ids0", VLAN: &filter.VLANOptions{Push: 100}},
 					{Intf: "tap-zeek0"},
 				},
 				Filters: []filter.Filter{
@@ -94,7 +102,7 @@ func DemoInitialConfig() *config.Config {
 				Src:       "eth2",
 				Direction: "both",
 				Dst: config.Destinations{
-					{Intf: "tap-zeek0"},
+					{Intf: "tap-zeek0", VLAN: &filter.VLANOptions{Push: 200}},
 				},
 			},
 		},

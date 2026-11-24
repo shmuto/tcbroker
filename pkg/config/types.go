@@ -7,31 +7,43 @@ import (
 	"tcbroker/pkg/filter"
 )
 
+// PortConfig provides human-readable metadata for a network interface in mini-NPB mode.
+type PortConfig struct {
+	Label       string `yaml:"label,omitempty" json:"label,omitempty"`
+	Role        string `yaml:"role,omitempty" json:"role,omitempty"` // optional: "tap" or "tool"
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+}
+
 // Config is the top-level declarative configuration structure.
 type Config struct {
-	Rules []Rule `yaml:"rules"`
+	Ports map[string]PortConfig `yaml:"ports,omitempty" json:"ports,omitempty"`
+	Rules []Rule                `yaml:"rules" json:"rules"`
 }
 
 // Rule represents a traffic mirroring rule from a source interface to one or more destinations.
 type Rule struct {
-	Name      string                 `yaml:"name"`                // Unique rule identifier (required)
-	Src       string                 `yaml:"src"`                 // Source interface name (required)
-	Direction string                 `yaml:"direction,omitempty"` // ingress (default), egress, or both
-	Dst       Destinations           `yaml:"dst"`                 // One or more destination interfaces (required)
-	Rewrite   *filter.RewriteOptions `yaml:"rewrite,omitempty"`   // Optional default rewrite for all destinations
-	Filters   []filter.Filter        `yaml:"filters,omitempty"`   // Optional match conditions (empty = all IPv4)
+	Name      string                   `yaml:"name"`                 // Unique rule identifier (required)
+	Src       string                   `yaml:"src"`                  // Source interface name (required)
+	Direction string                   `yaml:"direction,omitempty"`  // ingress (default), egress, or both
+	Dst       Destinations             `yaml:"dst"`                  // One or more destination interfaces (required)
+	Rewrite   *filter.RewriteOptions   `yaml:"rewrite,omitempty"`    // Optional default rewrite for all destinations
+	VLAN      *filter.VLANOptions      `yaml:"vlan,omitempty"`       // Optional default VLAN push/pop for all destinations
+	RateLimit *filter.RateLimitOptions `yaml:"rate_limit,omitempty"` // Optional default mirror bandwidth cap
+	Filters   []filter.Filter          `yaml:"filters,omitempty"`    // Optional match conditions (empty = all IPv4)
 }
 
-// Destination represents a mirror target interface with optional per-destination rewrite.
+// Destination represents a mirror target interface with optional per-destination packet actions.
 type Destination struct {
-	Intf    string                 `yaml:"intf"`
-	Rewrite *filter.RewriteOptions `yaml:"rewrite,omitempty"`
+	Intf      string                   `yaml:"intf"`
+	Rewrite   *filter.RewriteOptions   `yaml:"rewrite,omitempty"`
+	VLAN      *filter.VLANOptions      `yaml:"vlan,omitempty"`
+	RateLimit *filter.RateLimitOptions `yaml:"rate_limit,omitempty"`
 }
 
 // Destinations supports flexible YAML syntax:
 //   - single string:   dst: eth1
 //   - string list:     dst: [eth1, eth2]
-//   - object or list:  dst: [{intf: eth1, rewrite: {dst_mac: ...}}, eth2]
+//   - object or list:  dst: [{intf: eth1, vlan: {push: 100}, rewrite: {dst_mac: ...}}, eth2]
 type Destinations []Destination
 
 // UnmarshalYAML decodes flexible destination formats into a slice of Destination.
@@ -82,11 +94,12 @@ func (d *Destinations) UnmarshalYAML(value *yaml.Node) error {
 }
 
 func decodeDestinationMapping(node *yaml.Node) (Destination, error) {
-	// Strict field check on mapping keys so typos like "interface:" fail fast.
 	for i := 0; i < len(node.Content)-1; i += 2 {
 		key := node.Content[i].Value
-		if key != "intf" && key != "rewrite" {
-			return Destination{}, fmt.Errorf("unknown field %q in dst object (allowed: intf, rewrite)", key)
+		switch key {
+		case "intf", "rewrite", "vlan", "rate_limit":
+		default:
+			return Destination{}, fmt.Errorf("unknown field %q in dst object (allowed: intf, rewrite, vlan, rate_limit)", key)
 		}
 	}
 	var dst Destination
@@ -130,6 +143,22 @@ func (r Rule) EffectiveRewrite(dst Destination) *filter.RewriteOptions {
 		return dst.Rewrite
 	}
 	return r.Rewrite
+}
+
+// EffectiveVLAN returns the destination-specific VLAN option if set, otherwise the rule-level VLAN option.
+func (r Rule) EffectiveVLAN(dst Destination) *filter.VLANOptions {
+	if dst.VLAN != nil {
+		return dst.VLAN
+	}
+	return r.VLAN
+}
+
+// EffectiveRateLimit returns the destination-specific rate limit if set, otherwise the rule-level rate limit.
+func (r Rule) EffectiveRateLimit(dst Destination) *filter.RateLimitOptions {
+	if dst.RateLimit != nil {
+		return dst.RateLimit
+	}
+	return r.RateLimit
 }
 
 // AllInterfaces returns all unique source and destination interface names referenced in the config.

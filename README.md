@@ -122,13 +122,31 @@ docker run --rm --cap-add=NET_ADMIN --network host \
 ## Configuration Reference
 
 ```yaml
+ports:                          # Optional: human-readable labels shown in status & WebUI
+  eth0:
+    label: wan-uplink
+    role: tap                   # Optional: tap | tool
+  eth1:
+    label: suricata-ids
+    role: tool
+
 rules:
   - name: <string>              # Required: unique rule identifier
     src: <string>               # Required: source interface
     direction: <ingress|egress|both> # Optional: default "ingress"
+    rate_limit:                 # Optional: non-dropping mirror bandwidth cap
+      rate: <e.g. 500mbit>
+      burst: <e.g. 1mb>         # Optional: default 1mb
+    vlan:                       # Optional: default VLAN op for all destinations
+      push: <1-4094>            # Pushed on mirror copy, popped on original packet
+      # pop: true               # Or strip outer VLAN tag before mirroring
     dst:                        # Required: string, list of strings, or list of objects
       - <intf>
       - intf: <string>
+        vlan:                   # Optional: overrides rule-level vlan
+          push: <1-4094>
+        rate_limit:             # Optional: overrides rule-level rate_limit
+          rate: <e.g. 100mbit>
         rewrite:                # Optional: overrides rule-level rewrite for this target
           dst_mac: <mac>
           src_mac: <mac>

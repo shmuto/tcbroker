@@ -121,6 +121,46 @@ func TestBuildTCArgs(t *testing.T) {
 				"action", "mirred", "egress", "mirror", "dev", "eth1", "continue",
 			},
 		},
+		{
+			name: "vlan push restores original packet via trailing vlan pop",
+			spec: BuildSpec{
+				SrcIntf: "eth0",
+				Hook:    "ingress",
+				Pref:    20005,
+				Handle:  "0x1",
+				DstIntf: "tap-ids0",
+				Filter:  Filter{Proto: "tcp", DstPort: 443},
+				VLAN:    &VLANOptions{Push: 100},
+			},
+			want: []string{
+				"filter", "add", "dev", "eth0", "ingress",
+				"pref", "20005", "protocol", "ip", "flower", "handle", "0x1",
+				"ip_proto", "tcp", "dst_port", "443",
+				"action", "vlan", "push", "id", "100", "pipe",
+				"action", "mirred", "egress", "mirror", "dev", "tap-ids0", "pipe",
+				"action", "vlan", "pop", "continue",
+			},
+		},
+		{
+			name: "safe police rate limit with vlan pop",
+			spec: BuildSpec{
+				SrcIntf:   "eth0",
+				Hook:      "ingress",
+				Pref:      20006,
+				Handle:    "0x1",
+				DstIntf:   "tap-ids0",
+				Filter:    Filter{},
+				VLAN:      &VLANOptions{Pop: true},
+				RateLimit: &RateLimitOptions{Rate: "100mbit"},
+			},
+			want: []string{
+				"filter", "add", "dev", "eth0", "ingress",
+				"pref", "20006", "protocol", "ip", "flower", "handle", "0x1",
+				"action", "police", "rate", "100mbit", "burst", "1mb", "conform-exceed", "continue/pipe",
+				"action", "vlan", "pop", "pipe",
+				"action", "mirred", "egress", "mirror", "dev", "tap-ids0", "continue",
+			},
+		},
 	}
 
 	for _, tt := range tests {
