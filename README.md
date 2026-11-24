@@ -142,6 +142,11 @@ make build
 make docker-test
 ```
 
+## Documentation
+
+- [Product Vision & Roadmap](docs/product-vision.md) - Mini-NPB positioning, deployment strategy, WebUI design, and phased roadmap
+- [Architecture](docs/architecture.md) - System design and diagrams
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
