@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>tcbroker — Mini Network Packet Broker</title>
+  <meta name="description" content="Real-time Linux TC packet mirroring topology, traffic counters, and declarative rule management.">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <h1>tcbroker</h1>
+        <span id="version-badge" class="meta-tag">v2.0.0</span>
+        <span id="mode-badge" class="meta-tag hidden"></span>
+      </div>
+    </div>
+    <nav class="topbar-actions" aria-label="Primary actions">
+      <button id="btn-pause" class="btn btn-subtle" type="button" title="Pause or resume live polling">Live 1s</button>
+      <a class="btn btn-subtle" href="/metrics" target="_blank" rel="noopener">Metrics</a>
+      <a class="btn btn-subtle" href="/api/v1/config.yaml" download="tcbroker.yaml">Export YAML</a>
+      <button id="btn-demo-drift" class="btn btn-subtle hidden" type="button">Simulate Drift</button>
+      <button id="btn-yaml" class="btn btn-secondary" type="button">Edit YAML</button>
+      <button id="btn-add-rule" class="btn btn-primary" type="button">+ Add Rule</button>
+      <button id="btn-stop-all" class="btn btn-danger-ghost" type="button">Stop All</button>
+    </nav>
+  </header>
+
+  <main class="shell">
+    <!-- Drift Banner -->
+    <section id="drift-banner" class="banner banner-warn hidden" role="alert">
+      <div class="banner-text">
+        <strong>Kernel drift detected.</strong>
+        <span>One or more managed TC filters are missing from the kernel. Reconcile to restore expected state.</span>
+      </div>
+      <button id="btn-reconcile" class="btn btn-warn" type="button">Reconcile Now</button>
+    </section>
+
+    <!-- Error / Status Toast -->
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+    <!-- KPI Strip -->
+    <section class="kpi-strip" aria-label="Traffic overview">
+      <article class="kpi-card">
+        <div class="kpi-head">
+          <span class="kpi-label">Throughput</span>
+          <span id="kpi-total-bytes" class="kpi-sub mono">0 B total</span>
+        </div>
+        <div class="kpi-body">
+          <div id="kpi-bps" class="kpi-value mono">0 B/s</div>
+          <svg id="spark-bps" class="sparkline" viewBox="0 0 120 32" preserveAspectRatio="none" aria-hidden="true"></svg>
+        </div>
+      </article>
+
+      <article class="kpi-card">
+        <div class="kpi-head">
+          <span class="kpi-label">Packet Rate</span>
+          <span id="kpi-total-pkts" class="kpi-sub mono">0 pkts</span>
+        </div>
+        <div class="kpi-body">
+          <div id="kpi-pps" class="kpi-value mono">0.0 pps</div>
+          <svg id="spark-pps" class="sparkline" viewBox="0 0 120 32" preserveAspectRatio="none" aria-hidden="true"></svg>
+        </div>
+      </article>
+
+      <article class="kpi-card">
+        <div class="kpi-head">
+          <span class="kpi-label">Managed Rules</span>
+          <span id="kpi-filters" class="kpi-sub mono">0/0 filters</span>
+        </div>
+        <div class="kpi-body">
+          <div id="kpi-rules" class="kpi-value mono">0</div>
+          <span id="kpi-health-text" class="health-summary">Idle</span>
+        </div>
+      </article>
+
+      <article class="kpi-card">
+        <div class="kpi-head">
+          <span class="kpi-label">Dropped</span>
+          <span id="kpi-updated" class="kpi-sub mono">--:--:--</span>
+        </div>
+        <div class="kpi-body">
+          <div id="kpi-dropped" class="kpi-value mono">0</div>
+          <span class="kpi-sub">mirred egress</span>
+        </div>
+      </article>
+    </section>
+
+    <!-- 3-Column NPB Flow Topology -->
+    <section class="panel" aria-label="Packet flow topology">
+      <div class="panel-header">
+        <div>
+          <h2>Packet Flow Map</h2>
+          <p class="panel-subtitle">Hover or click any port or rule to trace active TC mirror paths.</p>
+        </div>
+        <div class="panel-tools">
+          <button id="btn-clear-selection" class="btn btn-subtle hidden" type="button">Show All</button>
+        </div>
+      </div>
+
+      <div id="topology-empty" class="empty-state hidden">
+        <h3>No active mirroring rules</h3>
+        <p>Add a rule or apply a YAML configuration to start mirroring packets across Linux TC interfaces.</p>
+        <div class="empty-actions">
+          <button id="btn-empty-add" class="btn btn-primary" type="button">+ Add Rule</button>
+          <button id="btn-empty-yaml" class="btn btn-secondary" type="button">Edit YAML</button>
+        </div>
+      </div>
+
+      <div id="topology-stage" class="topology-stage">
+        <svg id="topology-wires" class="topology-wires" aria-hidden="true"></svg>
+        <div class="topology-grid">
+          <div class="topo-col">
+            <div class="col-title">Source / TAP Ports</div>
+            <div id="col-sources" class="node-list"></div>
+          </div>
+          <div class="topo-col">
+            <div class="col-title">Maps / Rules</div>
+            <div id="col-rules" class="node-list"></div>
+          </div>
+          <div class="topo-col">
+            <div class="col-title">Tool Ports</div>
+            <div id="col-tools" class="node-list"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Inspector / Filters Table -->
+    <section class="panel" aria-label="Rule and filter details">
+      <div class="panel-header">
+        <div>
+          <h2 id="inspector-title">All Managed Filters</h2>
+          <p id="inspector-subtitle" class="panel-subtitle">Exact kernel TC filter counters correlated by priority and handle.</p>
+        </div>
+        <div id="inspector-actions" class="panel-tools"></div>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Rule</th>
+              <th>Pref</th>
+              <th>State</th>
+              <th>Path</th>
+              <th>Match</th>
+              <th>Rewrite</th>
+              <th class="num">Packets</th>
+              <th class="num">Bytes</th>
+              <th class="num">PPS</th>
+              <th class="num">Rate</th>
+              <th class="num">Drop</th>
+            </tr>
+          </thead>
+          <tbody id="filters-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal: Add Rule -->
+  <dialog id="modal-add-rule" class="modal">
+    <form id="form-add-rule" class="modal-box" method="dialog">
+      <div class="modal-head">
+        <h3>Add Mirroring Rule</h3>
+        <button type="button" class="icon-btn" data-close-modal aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row-2">
+          <label class="field">
+            <span>Rule Name *</span>
+            <input id="f-name" name="name" type="text" required placeholder="e.g. web-to-suricata">
+          </label>
+          <label class="field">
+            <span>Direction</span>
+            <select id="f-direction" name="direction">
+              <option value="ingress" selected>ingress</option>
+              <option value="egress">egress</option>
+              <option value="both">both</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="form-row-2">
+          <label class="field">
+            <span>Source Interface *</span>
+            <input id="f-src" name="src" list="iface-list" required placeholder="e.g. eth0">
+          </label>
+          <label class="field">
+            <span>Destination Interface(s) * <small>(comma-separated)</small></span>
+            <input id="f-dst" name="dst" list="iface-list" required placeholder="e.g. tap-ids0, tap-zeek0">
+          </label>
+        </div>
+        <datalist id="iface-list"></datalist>
+
+        <fieldset class="fieldset">
+          <legend>Filter Criteria <small>(leave blank to mirror all IPv4)</small></legend>
+          <div class="form-row-3">
+            <label class="field">
+              <span>Protocol</span>
+              <select id="f-proto" name="proto">
+                <option value="">any</option>
+                <option value="tcp">tcp</option>
+                <option value="udp">udp</option>
+                <option value="icmp">icmp</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Src Port</span>
+              <input id="f-sport" name="src_port" type="number" min="1" max="65535" placeholder="any">
+            </label>
+            <label class="field">
+              <span>Dst Port</span>
+              <input id="f-dport" name="dst_port" type="number" min="1" max="65535" placeholder="e.g. 443">
+            </label>
+          </div>
+          <div class="form-row-2">
+            <label class="field">
+              <span>Src IP / CIDR</span>
+              <input id="f-sip" name="src_ip" type="text" placeholder="e.g. 192.168.10.0/24">
+            </label>
+            <label class="field">
+              <span>Dst IP / CIDR</span>
+              <input id="f-dip" name="dst_ip" type="text" placeholder="e.g. 10.0.0.5">
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset class="fieldset">
+          <legend>Optional Header Rewrite</legend>
+          <div class="form-row-2">
+            <label class="field">
+              <span>Rewrite Dst MAC</span>
+              <input id="f-rw-dmac" name="rw_dmac" type="text" placeholder="52:54:00:12:34:56">
+            </label>
+            <label class="field">
+              <span>Rewrite Src MAC</span>
+              <input id="f-rw-smac" name="rw_smac" type="text" placeholder="optional">
+            </label>
+          </div>
+          <div class="form-row-2">
+            <label class="field">
+              <span>Rewrite Dst IP</span>
+              <input id="f-rw-dip" name="rw_dip" type="text" placeholder="10.99.0.53">
+            </label>
+            <label class="field">
+              <span>Rewrite Src IP</span>
+              <input id="f-rw-sip" name="rw_sip" type="text" placeholder="optional">
+            </label>
+          </div>
+        </fieldset>
+
+        <div id="add-rule-feedback" class="feedback hidden"></div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-subtle" data-close-modal>Cancel</button>
+        <button id="btn-add-dryrun" type="button" class="btn btn-secondary">Dry-Run</button>
+        <button type="submit" class="btn btn-primary">Apply Rule</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Modal: YAML Editor -->
+  <dialog id="modal-yaml" class="modal modal-wide">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3>Declarative YAML Configuration</h3>
+        <button type="button" class="icon-btn" data-close-modal aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="panel-subtitle">Applying YAML reconciles only the diff against active TC filters and automatically rolls back on error.</p>
+        <textarea id="yaml-editor" class="code-editor" spellcheck="false" rows="16"></textarea>
+        <div id="yaml-feedback" class="feedback hidden"></div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-subtle" data-close-modal>Cancel</button>
+        <button id="btn-yaml-dryrun" type="button" class="btn btn-secondary">Preview Plan (Dry-Run)</button>
+        <button id="btn-yaml-apply" type="button" class="btn btn-primary">Apply Configuration</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal: API Token Prompt -->
+  <dialog id="modal-token" class="modal">
+    <form id="form-token" class="modal-box" method="dialog">
+      <div class="modal-head">
+        <h3>API Token Required</h3>
+        <button type="button" class="icon-btn" data-close-modal aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="panel-subtitle">This server protects mutating TC operations with an API token.</p>
+        <label class="field">
+          <span>API Token</span>
+          <input id="f-token" type="password" required autocomplete="off" placeholder="Enter --token value">
+        </label>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-subtle" data-close-modal>Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Token</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>

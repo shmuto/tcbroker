@@ -86,7 +86,33 @@ sudo ./tcbroker stop
 | `tcbroker apply <config>` | Idempotently apply rules with rollback on error (alias: `start`; supports `--dry-run`) |
 | `tcbroker status [rule]` | Show rule health and counters (`--watch`/`-w`, `--interval`, `--json`, `--raw`, `--all`) |
 | `tcbroker delete [rule...]` | Delete specific rule(s) or all managed rules with `--all` (aliases: `stop`, `rm`; `stop` without args deletes all) |
+| `tcbroker serve` | Start embedded mini-NPB WebUI, REST API, and Prometheus `/metrics` (alias: `ui`; supports `--listen`, `--read-only`, `--token`, `--demo`) |
 | `tcbroker version` | Print version information |
+
+### Mini-NPB WebUI & Prometheus Metrics
+
+`tcbroker` embeds a zero-dependency WebUI (`go:embed`, no external CDN) and Prometheus `/metrics` endpoint in the same single binary:
+
+```sh
+# Try immediately with simulated live traffic (no root required)
+./tcbroker serve --demo
+
+# Read-only monitoring UI + /metrics (no root required)
+./tcbroker serve --read-only --listen 127.0.0.1:8080
+
+# Full interactive mini-NPB mode with API token protection
+sudo ./tcbroker serve --listen 127.0.0.1:8080 --token "$TCBROKER_API_TOKEN"
+```
+
+### Docker Usage (Minimal Privilege)
+
+```sh
+# Persist /run/tcbroker so state survives across container runs
+docker run --rm --cap-add=NET_ADMIN --network host \
+  -v /run/tcbroker:/run/tcbroker \
+  -v $(pwd)/tcbroker.yaml:/config/tcbroker.yaml:ro \
+  ghcr.io/shmuto/tcbroker:latest apply /config/tcbroker.yaml
+```
 
 ### Global Flags
 
@@ -141,6 +167,11 @@ make build
 # Docker integration tests
 make docker-test
 ```
+
+## Documentation
+
+- [Product Vision & Roadmap](docs/product-vision.md) - Mini-NPB positioning, deployment strategy, WebUI design, and phased roadmap
+- [Architecture](docs/architecture.md) - System design and diagrams
 
 ## License
 
