@@ -120,12 +120,12 @@ flowchart LR
 - 刷新された YAML スキーマ（複数宛先・方向指定・省略可能 `filters`・厳密バリデーション）
 - 標準ライブラリ `flag` 化による最小依存構成（外部依存は `yaml.v3` のみ）
 
-### Phase 2: ミニ NPB WebUI MVP & Observability（次期フォーカス）
-- `tcbroker serve` サブコマンド（`go:embed` 内蔵ダッシュボード）
+### Phase 2: ミニ NPB WebUI MVP & Observability（完了 ✅）
+- `tcbroker serve` サブコマンド（エイリアス: `ui`、`go:embed` 内蔵ダッシュボード）
   - 3 カラム結線ビュー（Source Ports → Rules → Tool Ports）
   - リアルタイム PPS / bps 推移グラフ・ドロップ監視・ドリフト警告 & ワンクリック修復
-  - ルールの追加・編集・削除・YAML エクスポート
-  - `--read-only` モード & 簡易トークン認証
+  - ルールの追加・編集・削除・YAML エクスポート・`--demo` シミュレーションモード
+  - `--read-only` モード & Bearer トークン認証
 - Prometheus `/metrics` エンドポイント（ルール・フィルタ単位の packets / bytes / dropped / health）
 - Docker イメージの `NET_ADMIN` 最小権限運用ガイド & `/run/tcbroker` マウント対応
 

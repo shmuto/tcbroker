@@ -56,6 +56,12 @@ func commands() []command {
 			run:   cmdInit,
 		},
 		{
+			name:    "serve",
+			aliases: []string{"ui"},
+			short:   "Start the embedded mini-NPB WebUI, REST API, and Prometheus /metrics server",
+			run:     cmdServe,
+		},
+		{
 			name:  "version",
 			short: "Print tcbroker version",
 			run:   cmdVersion,
