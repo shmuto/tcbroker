@@ -16,10 +16,12 @@ DOCKER_COMPOSE=docker compose -f tests/compose.yaml
 DOCKER_EXEC=docker exec tcbroker-broker
 DOCKER_EXEC_IT=docker exec -it tcbroker-broker
 
+VERSION=$(shell cat VERSION)
+
 all: build
 
 build:
-	CGO_ENABLED=0 $(GOBUILD) -buildvcs=false -o $(BINARY_NAME) ./cmd/tcbroker
+	CGO_ENABLED=0 $(GOBUILD) -buildvcs=false -ldflags="-X main.version=$(VERSION)" -o $(BINARY_NAME) ./cmd/tcbroker
 
 test:
 	$(GOTEST) -v ./...

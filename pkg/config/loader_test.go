@@ -3,105 +3,113 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestLoad(t *testing.T) {
-	// Create a temporary config file for testing
 	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "test-config.yaml")
+	configPath := filepath.Join(tmpDir, "tcbroker.yaml")
 
 	configContent := `rules:
-  - name: http-mirror
-    src_intf: eth0
-    dst_intf: eth1
+  - name: mirror-all
+    src: eth0
+    dst: eth1
+
+  - name: web-multi
+    src: eth0
+    direction: both
+    dst:
+      - eth1
+      - intf: eth2
+        rewrite:
+          dst_mac: "52:54:00:12:34:56"
     filters:
-      - ip_proto: tcp
+      - proto: TCP
         src_ip: 192.168.1.0/24
         dst_port: 80
 
-  - name: dns-mirror
-    src_intf: eth0
-    dst_intf: eth1
-    filters:
-      - ip_proto: udp
-        dst_port: 53
-
-  - name: https-with-rewrite
-    src_intf: eth0
-    dst_intf: eth1
+  - name: rule-rewrite
+    src: eth1
+    dst:
+      intf: eth2
     rewrite:
-      dst_mac: "52:54:00:12:34:56"
+      dst_ip: "10.0.0.100"
     filters:
-      - ip_proto: tcp
-        dst_port: 443
+      - proto: udp
+        dst_port: 53
 `
-
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
-		t.Fatalf("Failed to create test config file: %v", err)
+		t.Fatalf("Failed to write test config: %v", err)
 	}
 
 	cfg, err := Load(configPath)
 	if err != nil {
-		t.Fatalf("Load() returned an unexpected error: %v", err)
+		t.Fatalf("Load() returned unexpected error: %v", err)
 	}
 
-	// Check that we have rules
 	if len(cfg.Rules) != 3 {
 		t.Fatalf("Expected 3 rules, got %d", len(cfg.Rules))
 	}
 
-	// Check first rule (HTTP mirror)
-	rule1 := cfg.Rules[0]
-	if rule1.Name != "http-mirror" {
-		t.Errorf("Expected rule1 name 'http-mirror', got '%s'", rule1.Name)
+	// Rule 1: minimal (filters omitted, direction defaults to ingress)
+	r1 := cfg.Rules[0]
+	if r1.Name != "mirror-all" || r1.Src != "eth0" || r1.EffectiveDirection() != "ingress" {
+		t.Errorf("Unexpected rule1 metadata: %+v", r1)
 	}
-	if rule1.SrcIntf != "eth0" {
-		t.Errorf("Expected rule1 src_intf 'eth0', got '%s'", rule1.SrcIntf)
+	if len(r1.Dst) != 1 || r1.Dst[0].Intf != "eth1" {
+		t.Errorf("Unexpected rule1 dst: %+v", r1.Dst)
 	}
-	if rule1.DstIntf != "eth1" {
-		t.Errorf("Expected rule1 dst_intf 'eth1', got '%s'", rule1.DstIntf)
-	}
-	if len(rule1.Filters) != 1 {
-		t.Fatalf("Expected 1 filter in rule1, got %d", len(rule1.Filters))
+	if len(r1.EffectiveFilters()) != 1 {
+		t.Errorf("Expected 1 effective catch-all filter, got %d", len(r1.EffectiveFilters()))
 	}
 
-	filter1 := rule1.Filters[0]
-	if filter1.IPProto != "tcp" {
-		t.Errorf("Expected filter1 ip_proto 'tcp', got '%s'", filter1.IPProto)
+	// Rule 2: multi-dst + mixed string/object + normalized proto + direction both
+	r2 := cfg.Rules[1]
+	if len(r2.EffectiveHooks()) != 2 {
+		t.Errorf("Expected 2 hooks for direction=both, got %v", r2.EffectiveHooks())
 	}
-	if filter1.SrcIP != "192.168.1.0/24" {
-		t.Errorf("Expected filter1 src_ip '192.168.1.0/24', got '%s'", filter1.SrcIP)
+	if len(r2.Dst) != 2 || r2.Dst[0].Intf != "eth1" || r2.Dst[1].Intf != "eth2" {
+		t.Fatalf("Unexpected rule2 dst: %+v", r2.Dst)
 	}
-	if filter1.DstPort != 80 {
-		t.Errorf("Expected filter1 dst_port 80, got %d", filter1.DstPort)
+	if r2.Dst[1].Rewrite == nil || r2.Dst[1].Rewrite.DstMAC != "52:54:00:12:34:56" {
+		t.Errorf("Unexpected rule2 dst[1] rewrite: %+v", r2.Dst[1].Rewrite)
 	}
-
-	// Check second rule (DNS mirror)
-	rule2 := cfg.Rules[1]
-	if rule2.Name != "dns-mirror" {
-		t.Errorf("Expected rule2 name 'dns-mirror', got '%s'", rule2.Name)
+	if r2.Filters[0].Proto != "tcp" {
+		t.Errorf("Expected normalized proto 'tcp', got %q", r2.Filters[0].Proto)
 	}
 
-	filter2 := rule2.Filters[0]
-	if filter2.IPProto != "udp" {
-		t.Errorf("Expected filter2 ip_proto 'udp', got '%s'", filter2.IPProto)
+	// Rule 3: object dst + rule-level rewrite fallback
+	r3 := cfg.Rules[2]
+	if eff := r3.EffectiveRewrite(r3.Dst[0]); eff == nil || eff.DstIP != "10.0.0.100" {
+		t.Errorf("Expected rule-level rewrite fallback, got %+v", eff)
 	}
-	if filter2.DstPort != 53 {
-		t.Errorf("Expected filter2 dst_port 53, got %d", filter2.DstPort)
-	}
+}
 
-	// Check third rule with rewrite
-	rule3 := cfg.Rules[2]
-	if rule3.Name != "https-with-rewrite" {
-		t.Errorf("Expected rule3 name 'https-with-rewrite', got '%s'", rule3.Name)
+func TestParse_UnknownFieldRejected(t *testing.T) {
+	yamlData := `rules:
+  - name: typo-test
+    src: eth0
+    dst: eth1
+    filters:
+      - proto: tcp
+        dst_prot: 80
+`
+	_, err := Parse([]byte(yamlData))
+	if err == nil {
+		t.Fatal("Expected error for unknown field 'dst_prot', got nil")
 	}
-
-	if rule3.Rewrite == nil {
-		t.Fatal("Expected rule3 to have rewrite options")
+	if !strings.Contains(err.Error(), "dst_prot") {
+		t.Errorf("Expected error mentioning 'dst_prot', got: %v", err)
 	}
+}
 
-	if rule3.Rewrite.DstMAC != "52:54:00:12:34:56" {
-		t.Errorf("Expected rule3 rewrite dst_mac '52:54:00:12:34:56', got '%s'", rule3.Rewrite.DstMAC)
+func TestParse_SampleTemplateIsValid(t *testing.T) {
+	cfg, err := Parse([]byte(SampleConfigTemplate))
+	if err != nil {
+		t.Fatalf("SampleConfigTemplate failed validation: %v", err)
+	}
+	if len(cfg.Rules) == 0 {
+		t.Fatal("SampleConfigTemplate should define at least one rule")
 	}
 }

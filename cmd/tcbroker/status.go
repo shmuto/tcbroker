@@ -1,286 +1,313 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
-	"strconv"
+	"os/signal"
 	"strings"
+	"syscall"
+	"text/tabwriter"
+	"time"
 
-	"github.com/spf13/cobra"
-	"tcbroker/pkg/config"
-	"tcbroker/pkg/filter"
+	"tcbroker/pkg/manager"
+	"tcbroker/pkg/state"
 	"tcbroker/pkg/tc"
 )
 
-var (
-	showAll     bool
-	showStats   bool
-	showSummary bool
-)
+func printStatusUsage(w io.Writer) {
+	_, _ = fmt.Fprint(w, `Usage:
+  tcbroker status [rule-name] [flags]
 
-var statusCmd = &cobra.Command{
-	Use:   "status [config-file]",
-	Short: "Shows the current status of packet mirroring.",
-	Long: `Displays the current tc configuration including active qdiscs and filters.
-If a config file is provided, shows status for interfaces in the config.
-Otherwise, shows all tc rules on the system.`,
-	Args: cobra.MaximumNArgs(1),
-	Run:  status,
+Displays the current status and packet/byte counters for tcbroker-managed rules
+without requiring the original config file.
+
+Optionally pass a rule name to inspect per-filter details, or use --watch to
+monitor live packet and byte rates.
+
+Flags:
+  -w, --watch               Continuously monitor status and live packet/byte rates
+      --interval duration   Refresh interval for --watch (default 1s)
+      --json                Output status as JSON
+      --raw                 Show raw 'tc -s filter show' output for managed interfaces
+      --all                 Show all TC qdiscs on the system
+      --state-file string   Override state file path
+      --debug               Print all tc commands executed
+  -h, --help                Show help
+`)
 }
 
-func init() {
-	rootCmd.AddCommand(statusCmd)
-	statusCmd.Flags().BoolVar(&showAll, "all", false, "Show all tc rules on the system (ignores config file)")
-	statusCmd.Flags().BoolVar(&showStats, "stats", false, "Show statistics (packet counts, byte counts)")
-	statusCmd.Flags().BoolVar(&showSummary, "summary", false, "Show summarized statistics (parsed and formatted)")
-}
+func cmdStatus(_ string, args []string) error {
+	var (
+		watch    bool
+		interval time.Duration
+		asJSON   bool
+		raw      bool
+		all      bool
+	)
 
-func status(cmd *cobra.Command, args []string) {
-	runner := tc.NewRunner(false, false)
+	fs := newFlagSet("status", printStatusUsage)
+	fs.BoolVar(&watch, "watch", false, "Continuously monitor status and live packet/byte rates")
+	fs.BoolVar(&watch, "w", false, "Shorthand for --watch")
+	fs.DurationVar(&interval, "interval", 1*time.Second, "Refresh interval for --watch")
+	fs.BoolVar(&asJSON, "json", false, "Output status as JSON")
+	fs.BoolVar(&raw, "raw", false, "Show raw tc -s filter show output for managed interfaces")
+	fs.BoolVar(&all, "all", false, "Show all TC qdiscs on the system")
 
-	// If --all flag is set, show all tc rules on the system
-	if showAll {
-		fmt.Println("=== All TC Rules on System ===")
-		allQdiscs, err := runner.GetAllInterfaces()
+	pos, err := parseFlags(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) > 1 {
+		return fmt.Errorf("expected at most 1 argument: [rule-name] (run `tcbroker status --help` for usage)")
+	}
+
+	runner := tc.NewRunner(flagDebug, false)
+
+	if all {
+		out, err := runner.GetAllInterfaces()
 		if err != nil {
-			fmt.Printf("Error listing qdiscs: %v\n", err)
-			os.Exit(1)
+			return err
 		}
-		fmt.Println(allQdiscs)
+		fmt.Println("=== All TC Qdiscs on System ===")
+		fmt.Print(out)
+		return nil
+	}
+
+	if raw {
+		return printRawManagedTC(runner)
+	}
+
+	ruleFilter := ""
+	if len(pos) == 1 {
+		ruleFilter = pos[0]
+	}
+
+	mgr := manager.New(runner, resolvedStatePath())
+
+	if watch {
+		if interval <= 0 {
+			return fmt.Errorf("--interval must be greater than 0")
+		}
+		return watchStatus(mgr, ruleFilter, interval, asJSON)
+	}
+
+	report, err := mgr.Status(ruleFilter)
+	if err != nil {
+		return err
+	}
+
+	if asJSON {
+		return printStatusJSON(report)
+	}
+
+	renderStatusReport(report, ruleFilter, nil, 0)
+	return nil
+}
+
+func watchStatus(mgr *manager.Manager, ruleFilter string, interval time.Duration, asJSON bool) error {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	var prev *manager.StatusReport
+	var prevTime time.Time
+
+	for {
+		now := time.Now()
+		report, err := mgr.Status(ruleFilter)
+		if err != nil {
+			return err
+		}
+
+		if asJSON {
+			if err := printStatusJSON(report); err != nil {
+				return err
+			}
+		} else {
+			fmt.Print("\033[H\033[2J")
+			fmt.Printf("tcbroker status (refresh %s, %s) - press Ctrl+C to exit\n\n",
+				interval, now.Format("15:04:05"))
+			var elapsed float64
+			if prev != nil {
+				elapsed = now.Sub(prevTime).Seconds()
+			}
+			renderStatusReport(report, ruleFilter, prev, elapsed)
+		}
+
+		prev = report
+		prevTime = now
+
+		select {
+		case <-sigCh:
+			fmt.Println()
+			return nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func printStatusJSON(report *manager.StatusReport) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(report)
+}
+
+func renderStatusReport(report *manager.StatusReport, ruleFilter string, prev *manager.StatusReport, elapsedSec float64) {
+	if len(report.Rules) == 0 {
+		fmt.Println("No active tcbroker rules.")
+		fmt.Println("Run `sudo tcbroker apply <config.yaml>` to start mirroring.")
 		return
 	}
 
-	// If no config file is provided and --all is not set, show error
-	if len(args) == 0 {
-		fmt.Println("Error: Please provide a config file or use --all flag to show all tc rules.")
-		fmt.Println("Usage: tcbroker status [config-file] or tcbroker status --all")
-		os.Exit(1)
-	}
-
-	// Load the configuration
-	configFile := args[0]
-	cfg, err := config.Load(configFile)
-	if err != nil {
-		fmt.Printf("Error loading config file: %v\n", err)
-		os.Exit(1)
-	}
-
-	// If --summary flag is set, show simple per-rule statistics
-	if showSummary {
-		fmt.Printf("%-30s  %-20s  %-20s  %10s  %s\n", "Name", "SrcIntf", "DstIntf", "Packets", "Bytes")
-		for _, rule := range cfg.Rules {
-			totalPackets, totalBytes := getRuleStats(runner, rule)
-			fmt.Printf("%-30s  %-20s  %-20s  %10d  %s\n", rule.Name, rule.SrcIntf, rule.DstIntf, totalPackets, tc.FormatBytes(totalBytes))
-		}
+	if ruleFilter != "" && len(report.Rules) == 1 {
+		renderRuleDetail(report.Rules[0], prev, elapsedSec)
 		return
 	}
 
-	fmt.Printf("=== TC Status for Configuration: %s ===\n\n", configFile)
-
-	// Collect unique source interfaces from rules
-	srcInterfaceSet := make(map[string]bool)
-	for _, rule := range cfg.Rules {
-		srcInterfaceSet[rule.SrcIntf] = true
+	prevRules := make(map[string]manager.RuleStatus)
+	if prev != nil {
+		for _, r := range prev.Rules {
+			prevRules[r.Name] = r
+		}
 	}
 
-	// Show status for each source interface
-	for srcIntf := range srcInterfaceSet {
-		fmt.Printf("Interface: %s (direction: ingress)\n", srcIntf)
-		fmt.Println(strings.Repeat("-", 60))
+	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	if prev != nil && elapsedSec > 0 {
+		_, _ = fmt.Fprintln(w, "RULE\tSTATUS\tSRC\tDIR\tDST\tFILTERS\tPACKETS\tBYTES\tPPS\tRATE\tDROPPED")
+	} else {
+		_, _ = fmt.Fprintln(w, "RULE\tSTATUS\tSRC\tDIR\tDST\tFILTERS\tPACKETS\tBYTES\tDROPPED")
+	}
 
-		// Check if interface has clsact qdisc
-		hasClsact, err := runner.HasClsactQdisc(srcIntf)
-		if err != nil {
-			fmt.Printf("  Error checking qdisc: %v\n\n", err)
-			continue
-		}
+	for _, r := range report.Rules {
+		dir := strings.Join(r.Hooks, ",")
+		dsts := strings.Join(r.Destinations, ",")
+		filtersCol := fmt.Sprintf("%d/%d", r.ActiveFilters, r.TotalFilters)
 
-		if !hasClsact {
-			fmt.Printf("  Status: No clsact qdisc found (mirroring not active)\n\n")
-			continue
-		}
-
-		fmt.Printf("  Status: Active (clsact qdisc present)\n\n")
-
-		// Show qdiscs (only clsact)
-		fmt.Printf("  Qdiscs:\n")
-		qdiscs, err := runner.ListQdiscs(srcIntf)
-		if err != nil {
-			fmt.Printf("    Error: %v\n", err)
+		if prev != nil && elapsedSec > 0 {
+			var pps, bps float64
+			if pr, ok := prevRules[r.Name]; ok {
+				dp := r.Packets - pr.Packets
+				db := r.Bytes - pr.Bytes
+				if dp > 0 {
+					pps = float64(dp) / elapsedSec
+				}
+				if db > 0 {
+					bps = float64(db) / elapsedSec
+				}
+			}
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%.1f\t%s\t%d\n",
+				r.Name, r.Health, r.SrcIntf, dir, dsts, filtersCol,
+				r.Packets, tc.FormatBytes(r.Bytes), pps, tc.FormatByteRate(bps), r.Dropped)
 		} else {
-			found := false
-			for _, line := range strings.Split(strings.TrimSpace(qdiscs), "\n") {
-				if line != "" && strings.Contains(line, "clsact") {
-					fmt.Printf("    %s\n", line)
-					found = true
-				}
-			}
-			if !found {
-				fmt.Printf("    (no clsact qdisc)\n")
-			}
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%d\n",
+				r.Name, r.Health, r.SrcIntf, dir, dsts, filtersCol,
+				r.Packets, tc.FormatBytes(r.Bytes), r.Dropped)
 		}
-		fmt.Println()
+	}
+	_ = w.Flush()
 
-		// Show filters for ingress direction
-		hook := "ingress"
-		fmt.Printf("  Filters (%s):\n", hook)
-
-		if showSummary {
-			// Parse and show summarized statistics
-			output, err := runner.ListFiltersWithStats(srcIntf, hook)
-			if err != nil {
-				fmt.Printf("    Error: %v\n", err)
-				fmt.Println()
-				continue
-			}
-
-			filters, parseErr := tc.ParseFilterStats(output)
-			if parseErr != nil {
-				fmt.Printf("    Error parsing filter stats: %v\n", parseErr)
-				fmt.Println()
-				continue
-			}
-
-			if len(filters) == 0 {
-				fmt.Printf("    (no filters)\n")
-			} else {
-				var totalPackets, totalBytes int64
-				for _, filter := range filters {
-					desc := filter.GetMatchDescription()
-					fmt.Printf("    %-20s", desc)
-
-					if len(filter.Actions) > 0 {
-						action := filter.Actions[0]
-						fmt.Printf("→ %-8s  ", action.TargetDev)
-						fmt.Printf("Packets: %-8d  Bytes: %-12s", action.Packets, tc.FormatBytes(action.Bytes))
-						if action.Dropped > 0 {
-							fmt.Printf("  Dropped: %d", action.Dropped)
-						}
-						totalPackets += action.Packets
-						totalBytes += action.Bytes
-					}
-					fmt.Println()
-				}
-
-				if len(filters) > 1 {
-					fmt.Printf("\n    %-20s  %-8s  Packets: %-8d  Bytes: %-12s\n",
-						"TOTAL", "", totalPackets, tc.FormatBytes(totalBytes))
-				}
-			}
-			fmt.Println()
-		} else {
-			// Show raw tc output
-			var filters string
-			if showStats {
-				filters, err = runner.ListFiltersWithStats(srcIntf, hook)
-			} else {
-				filters, err = runner.ListFilters(srcIntf, hook)
-			}
-
-			if err != nil {
-				fmt.Printf("    Error: %v\n", err)
-			} else if strings.TrimSpace(filters) == "" {
-				fmt.Printf("    (no filters)\n")
-			} else {
-				for _, line := range strings.Split(strings.TrimSpace(filters), "\n") {
-					if line != "" {
-						fmt.Printf("    %s\n", line)
-					}
-				}
-			}
-			fmt.Println()
+	if report.ConfigPath != "" {
+		fmt.Printf("\nConfig: %s\n", report.ConfigPath)
+	}
+	if report.HasDrift() {
+		hintCfg := "<config.yaml>"
+		if report.ConfigPath != "" {
+			hintCfg = report.ConfigPath
 		}
-
-		fmt.Println()
+		fmt.Printf("Warning: one or more filters are missing from kernel TC. Run `sudo tcbroker apply %s` to reconcile.\n", hintCfg)
 	}
 }
 
-// getRuleStats retrieves statistics for a specific rule by matching tc filters
-func getRuleStats(runner *tc.Runner, rule config.Rule) (int64, int64) {
-	var totalPackets, totalBytes int64
+func renderRuleDetail(r manager.RuleStatus, prev *manager.StatusReport, elapsedSec float64) {
+	fmt.Printf("Rule:    %s (%s)\n", r.Name, r.Health)
+	fmt.Printf("Source:  %s (%s)\n", r.SrcIntf, strings.Join(r.Hooks, ", "))
+	fmt.Printf("Targets: %s\n", strings.Join(r.Destinations, ", "))
+	fmt.Printf("Totals:  %d packets, %s, %d dropped\n\n", r.Packets, tc.FormatBytes(r.Bytes), r.Dropped)
 
-	// Query filters for this rule's source interface
-	output, err := runner.ListFiltersWithStats(rule.SrcIntf, "ingress")
+	prevFilters := make(map[string]manager.FilterStatus)
+	if prev != nil && len(prev.Rules) == 1 {
+		for _, f := range prev.Rules[0].Filters {
+			key := fmt.Sprintf("%s:%d", f.Managed.Hook, f.Managed.Pref)
+			prevFilters[key] = f
+		}
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	if prev != nil && elapsedSec > 0 {
+		_, _ = fmt.Fprintln(w, "PREF\tSTATE\tHOOK\tDST\tMATCH\tREWRITE\tPACKETS\tBYTES\tPPS\tRATE\tDROPPED")
+	} else {
+		_, _ = fmt.Fprintln(w, "PREF\tSTATE\tHOOK\tDST\tMATCH\tREWRITE\tPACKETS\tBYTES\tDROPPED")
+	}
+
+	for _, fs := range r.Filters {
+		st := "ACTIVE"
+		if !fs.Present {
+			st = "MISSING"
+		}
+		rw := "-"
+		if !fs.Managed.Rewrite.IsEmpty() {
+			rw = fs.Managed.Rewrite.Summary()
+		}
+
+		if prev != nil && elapsedSec > 0 {
+			var pps, bps float64
+			key := fmt.Sprintf("%s:%d", fs.Managed.Hook, fs.Managed.Pref)
+			if pf, ok := prevFilters[key]; ok {
+				if dp := fs.Packets - pf.Packets; dp > 0 {
+					pps = float64(dp) / elapsedSec
+				}
+				if db := fs.Bytes - pf.Bytes; db > 0 {
+					bps = float64(db) / elapsedSec
+				}
+			}
+			_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%.1f\t%s\t%d\n",
+				fs.Managed.Pref, st, fs.Managed.Hook, fs.Managed.DstIntf,
+				fs.Managed.Filter.Summary(), rw,
+				fs.Packets, tc.FormatBytes(fs.Bytes), pps, tc.FormatByteRate(bps), fs.Dropped)
+		} else {
+			_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%d\n",
+				fs.Managed.Pref, st, fs.Managed.Hook, fs.Managed.DstIntf,
+				fs.Managed.Filter.Summary(), rw,
+				fs.Packets, tc.FormatBytes(fs.Bytes), fs.Dropped)
+		}
+	}
+	_ = w.Flush()
+}
+
+func printRawManagedTC(runner *tc.Runner) error {
+	st, err := state.Load(resolvedStatePath())
 	if err != nil {
-		return 0, 0
+		return err
+	}
+	if len(st.Filters) == 0 {
+		fmt.Println("No active tcbroker rules.")
+		return nil
 	}
 
-	tcFilters, parseErr := tc.ParseFilterStats(output)
-	if parseErr != nil {
-		return 0, 0
-	}
-
-	// For each filter in the rule's config
-	for _, ruleFilter := range rule.Filters {
-		// Try to match with tc filters
-		for _, tcFilter := range tcFilters {
-			if matchesFilter(tcFilter, ruleFilter, rule.DstIntf) {
-				// Sum up the action statistics for the matching target device only
-				// to avoid double counting when there are multiple actions (e.g., skbmod + mirred)
-				for _, action := range tcFilter.Actions {
-					if action.TargetDev == rule.DstIntf {
-						totalPackets += action.Packets
-						totalBytes += action.Bytes
-					}
-				}
-			}
+	type ifaceHook struct{ src, hook string }
+	seen := make(map[ifaceHook]bool)
+	for _, f := range st.Filters {
+		k := ifaceHook{src: f.SrcIntf, hook: f.Hook}
+		if seen[k] {
+			continue
 		}
-	}
-
-	return totalPackets, totalBytes
-}
-
-// matchesFilter checks if a tc filter matches a rule filter configuration
-func matchesFilter(tcFilter tc.FilterStats, ruleFilter filter.Filter, dstIntf string) bool {
-	// Check ip_proto
-	if ruleFilter.IPProto != "" {
-		if proto, ok := tcFilter.Matches["ip_proto"]; !ok || proto != ruleFilter.IPProto {
-			return false
+		seen[k] = true
+		fmt.Printf("=== %s (%s) ===\n", f.SrcIntf, f.Hook)
+		out, err := runner.ListFiltersWithStats(f.SrcIntf, f.Hook)
+		if err != nil {
+			return err
 		}
-	}
-
-	// Check src_ip
-	if ruleFilter.SrcIP != "" {
-		if srcIP, ok := tcFilter.Matches["src_ip"]; !ok || srcIP != ruleFilter.SrcIP {
-			return false
+		if strings.TrimSpace(out) == "" {
+			fmt.Println("(no filters)")
+		} else {
+			fmt.Print(out)
 		}
+		fmt.Println()
 	}
-
-	// Check dst_ip
-	if ruleFilter.DstIP != "" {
-		if dstIP, ok := tcFilter.Matches["dst_ip"]; !ok || dstIP != ruleFilter.DstIP {
-			return false
-		}
-	}
-
-	// Check src_port
-	if ruleFilter.SrcPort != 0 {
-		if srcPort, ok := tcFilter.Matches["src_port"]; !ok || srcPort != strconv.Itoa(ruleFilter.SrcPort) {
-			return false
-		}
-	}
-
-	// Check dst_port
-	if ruleFilter.DstPort != 0 {
-		if dstPort, ok := tcFilter.Matches["dst_port"]; !ok || dstPort != strconv.Itoa(ruleFilter.DstPort) {
-			return false
-		}
-	}
-
-	// Check destination interface (target device)
-	// Need to check all actions since there might be multiple actions (e.g., skbmod + mirred)
-	if dstIntf != "" {
-		found := false
-		for _, action := range tcFilter.Actions {
-			if action.TargetDev == dstIntf {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-
-	return true
+	return nil
 }

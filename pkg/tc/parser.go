@@ -7,7 +7,16 @@ import (
 	"strings"
 )
 
-// FilterStats represents statistics for a single tc filter
+var (
+	reMirred     = regexp.MustCompile(`mirred \(([^)]+)\)`)
+	reSentStats  = regexp.MustCompile(`Sent (\d+) bytes (\d+) pkt`)
+	reDropped    = regexp.MustCompile(`dropped (\d+)`)
+	reOverlimits = regexp.MustCompile(`overlimits (\d+)`)
+	reRequeues   = regexp.MustCompile(`requeues (\d+)`)
+	reBacklog    = regexp.MustCompile(`backlog (\d+)b (\d+)p`)
+)
+
+// FilterStats represents statistics for a single tc filter.
 type FilterStats struct {
 	Protocol  string
 	Priority  int
@@ -18,11 +27,11 @@ type FilterStats struct {
 	Actions   []ActionStats
 }
 
-// ActionStats represents statistics for a filter action (e.g., mirred)
+// ActionStats represents statistics for a filter action (e.g., mirred, skbmod, pedit, csum).
 type ActionStats struct {
-	Type         string // "mirred", etc.
+	Type         string // "mirred", "skbmod", "pedit", "csum", etc.
 	Operation    string // "Egress Mirror", "Egress Redirect", etc.
-	TargetDev    string // Target device name
+	TargetDev    string // Target device name (for mirred)
 	Packets      int64
 	Bytes        int64
 	Dropped      int64
@@ -30,19 +39,17 @@ type ActionStats struct {
 	Requeues     int64
 	BacklogBytes int64
 	BacklogPkts  int64
-	Installed    string // "19 sec"
-	Used         string // "19 sec"
+	Installed    string
+	Used         string
 }
 
-// ParseFilterStats parses the output of `tc -s filter show` command
+// ParseFilterStats parses the output of `tc [-s] filter show` command.
 func ParseFilterStats(output string) ([]FilterStats, error) {
 	if strings.TrimSpace(output) == "" {
 		return []FilterStats{}, nil
 	}
 
 	var filters []FilterStats
-
-	// Split by filter blocks - each filter starts with "filter protocol"
 	lines := strings.Split(output, "\n")
 
 	var currentFilter *FilterStats
@@ -52,9 +59,8 @@ func ParseFilterStats(output string) ([]FilterStats, error) {
 	for _, line := range lines {
 		line = strings.TrimRight(line, "\r\n")
 
-		// New filter block - only count lines with "handle" as actual filter entries
+		// New filter block - only count lines with "handle" as concrete filter instances
 		if strings.HasPrefix(line, "filter protocol") && strings.Contains(line, "handle") {
-			// Save previous filter if exists
 			if currentFilter != nil && currentAction != nil {
 				currentFilter.Actions = append(currentFilter.Actions, *currentAction)
 				currentAction = nil
@@ -63,13 +69,12 @@ func ParseFilterStats(output string) ([]FilterStats, error) {
 				filters = append(filters, *currentFilter)
 			}
 
-			// Parse filter header
 			currentFilter = &FilterStats{
 				Matches: make(map[string]string),
 				Actions: []ActionStats{},
 			}
+			inActionStats = false
 
-			// Parse: filter protocol ip pref 49152 flower chain 0 handle 0x1
 			parts := strings.Fields(line)
 			for i := 0; i < len(parts); i++ {
 				switch parts[i] {
@@ -93,7 +98,7 @@ func ParseFilterStats(output string) ([]FilterStats, error) {
 							currentFilter.Chain = chain
 						}
 					}
-				case "flower", "u32", "basic":
+				case "flower", "u32", "basic", "bpf", "matchall":
 					currentFilter.MatchType = parts[i]
 				}
 			}
@@ -104,26 +109,8 @@ func ParseFilterStats(output string) ([]FilterStats, error) {
 			continue
 		}
 
-		// Match conditions (indented lines before action)
-		if strings.HasPrefix(line, "  ") && !strings.Contains(line, "action") && !inActionStats {
-			line = strings.TrimSpace(line)
-			// Parse match conditions like "eth_type ipv4", "ip_proto icmp", "dst_port 80"
-			if strings.Contains(line, " ") {
-				parts := strings.Fields(line)
-				if len(parts) >= 2 {
-					key := parts[0]
-					value := strings.Join(parts[1:], " ")
-					currentFilter.Matches[key] = value
-				}
-			} else if line != "" && line != "not_in_hw" {
-				currentFilter.Matches[line] = "true"
-			}
-			continue
-		}
-
-		// Action line: "action order 1: mirred (Egress Mirror to device veth1) pipe"
+		// Action line: e.g. "\taction order 1: mirred (Egress Mirror to device veth1) continue"
 		if strings.Contains(line, "action order") {
-			// Save previous action if exists
 			if currentAction != nil {
 				currentFilter.Actions = append(currentFilter.Actions, *currentAction)
 			}
@@ -131,23 +118,40 @@ func ParseFilterStats(output string) ([]FilterStats, error) {
 			currentAction = &ActionStats{}
 			inActionStats = false
 
-			// Parse mirred action
-			if strings.Contains(line, "mirred") {
+			switch {
+			case strings.Contains(line, "mirred"):
 				currentAction.Type = "mirred"
-
-				// Extract operation and target device
-				// Example: "mirred (Egress Mirror to device veth1) pipe"
-				re := regexp.MustCompile(`mirred \(([^)]+)\)`)
-				if matches := re.FindStringSubmatch(line); len(matches) > 1 {
+				if matches := reMirred.FindStringSubmatch(line); len(matches) > 1 {
 					opParts := strings.Fields(matches[1])
-					// "Egress Mirror to device veth1"
 					if len(opParts) >= 2 {
-						currentAction.Operation = opParts[0] + " " + opParts[1] // "Egress Mirror"
+						currentAction.Operation = opParts[0] + " " + opParts[1]
 					}
-					if len(opParts) >= 4 && opParts[2] == "to" && opParts[3] == "device" && len(opParts) >= 5 {
+					if len(opParts) >= 5 && opParts[2] == "to" && opParts[3] == "device" {
 						currentAction.TargetDev = opParts[4]
 					}
 				}
+			case strings.Contains(line, "skbmod"):
+				currentAction.Type = "skbmod"
+			case strings.Contains(line, "pedit"):
+				currentAction.Type = "pedit"
+			case strings.Contains(line, "csum"):
+				currentAction.Type = "csum"
+			default:
+				currentAction.Type = "other"
+			}
+			continue
+		}
+
+		// Match conditions (indented lines before any action)
+		if currentAction == nil && strings.HasPrefix(line, "  ") && !strings.Contains(line, "action") && !inActionStats {
+			trimmed := strings.TrimSpace(line)
+			if strings.Contains(trimmed, " ") {
+				parts := strings.Fields(trimmed)
+				if len(parts) >= 2 {
+					currentFilter.Matches[parts[0]] = strings.Join(parts[1:], " ")
+				}
+			} else if trimmed != "" && trimmed != "not_in_hw" {
+				currentFilter.Matches[trimmed] = "true"
 			}
 			continue
 		}
@@ -174,36 +178,26 @@ func ParseFilterStats(output string) ([]FilterStats, error) {
 
 		// Parse statistics: "Sent 840 bytes 10 pkt (dropped 0, overlimits 0 requeues 0)"
 		if inActionStats && currentAction != nil && strings.Contains(line, "Sent") {
-			line = strings.TrimSpace(line)
-
-			// Extract: Sent 840 bytes 10 pkt
-			re := regexp.MustCompile(`Sent (\d+) bytes (\d+) pkt`)
-			if matches := re.FindStringSubmatch(line); len(matches) == 3 {
-				if bytes, errConv := strconv.ParseInt(matches[1], 10, 64); errConv == nil {
-					currentAction.Bytes = bytes
+			trimmed := strings.TrimSpace(line)
+			if matches := reSentStats.FindStringSubmatch(trimmed); len(matches) == 3 {
+				if bytesVal, errConv := strconv.ParseInt(matches[1], 10, 64); errConv == nil {
+					currentAction.Bytes = bytesVal
 				}
-				if pkts, errConv := strconv.ParseInt(matches[2], 10, 64); errConv == nil {
-					currentAction.Packets = pkts
+				if pktsVal, errConv := strconv.ParseInt(matches[2], 10, 64); errConv == nil {
+					currentAction.Packets = pktsVal
 				}
 			}
-
-			// Extract: (dropped 0, overlimits 0 requeues 0)
-			re = regexp.MustCompile(`dropped (\d+)`)
-			if matches := re.FindStringSubmatch(line); len(matches) == 2 {
+			if matches := reDropped.FindStringSubmatch(trimmed); len(matches) == 2 {
 				if dropped, errConv := strconv.ParseInt(matches[1], 10, 64); errConv == nil {
 					currentAction.Dropped = dropped
 				}
 			}
-
-			re = regexp.MustCompile(`overlimits (\d+)`)
-			if matches := re.FindStringSubmatch(line); len(matches) == 2 {
+			if matches := reOverlimits.FindStringSubmatch(trimmed); len(matches) == 2 {
 				if overlimits, errConv := strconv.ParseInt(matches[1], 10, 64); errConv == nil {
 					currentAction.Overlimits = overlimits
 				}
 			}
-
-			re = regexp.MustCompile(`requeues (\d+)`)
-			if matches := re.FindStringSubmatch(line); len(matches) == 2 {
+			if matches := reRequeues.FindStringSubmatch(trimmed); len(matches) == 2 {
 				if requeues, errConv := strconv.ParseInt(matches[1], 10, 64); errConv == nil {
 					currentAction.Requeues = requeues
 				}
@@ -213,14 +207,13 @@ func ParseFilterStats(output string) ([]FilterStats, error) {
 
 		// Parse backlog: "backlog 0b 0p requeues 0"
 		if inActionStats && currentAction != nil && strings.Contains(line, "backlog") {
-			line = strings.TrimSpace(line)
-			re := regexp.MustCompile(`backlog (\d+)b (\d+)p`)
-			if matches := re.FindStringSubmatch(line); len(matches) == 3 {
-				if bytes, errConv := strconv.ParseInt(matches[1], 10, 64); errConv == nil {
-					currentAction.BacklogBytes = bytes
+			trimmed := strings.TrimSpace(line)
+			if matches := reBacklog.FindStringSubmatch(trimmed); len(matches) == 3 {
+				if bytesVal, errConv := strconv.ParseInt(matches[1], 10, 64); errConv == nil {
+					currentAction.BacklogBytes = bytesVal
 				}
-				if pkts, errConv := strconv.ParseInt(matches[2], 10, 64); errConv == nil {
-					currentAction.BacklogPkts = pkts
+				if pktsVal, errConv := strconv.ParseInt(matches[2], 10, 64); errConv == nil {
+					currentAction.BacklogPkts = pktsVal
 				}
 			}
 			inActionStats = false
@@ -228,7 +221,6 @@ func ParseFilterStats(output string) ([]FilterStats, error) {
 		}
 	}
 
-	// Save last filter
 	if currentFilter != nil {
 		if currentAction != nil {
 			currentFilter.Actions = append(currentFilter.Actions, *currentAction)
@@ -239,7 +231,18 @@ func ParseFilterStats(output string) ([]FilterStats, error) {
 	return filters, nil
 }
 
-// FormatBytes converts bytes to human-readable format
+// FindMirredAction returns the first mirred action targeting dstIntf (or any mirred action if dstIntf is empty).
+func (f *FilterStats) FindMirredAction(dstIntf string) *ActionStats {
+	for i := range f.Actions {
+		a := &f.Actions[i]
+		if a.Type == "mirred" && (dstIntf == "" || a.TargetDev == dstIntf) {
+			return a
+		}
+	}
+	return nil
+}
+
+// FormatBytes converts bytes to a human-readable string.
 func FormatBytes(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {
@@ -253,26 +256,36 @@ func FormatBytes(bytes int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
-// GetMatchDescription returns a human-readable description of the filter match
+// FormatByteRate formats bytes-per-second into a human-readable rate string.
+func FormatByteRate(bytesPerSec float64) string {
+	const unit = 1024.0
+	if bytesPerSec < unit {
+		return fmt.Sprintf("%.0f B/s", bytesPerSec)
+	}
+	div, exp := unit, 0
+	for n := bytesPerSec / unit; n >= unit && exp < 5; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB/s", bytesPerSec/div, "KMGTPE"[exp])
+}
+
+// GetMatchDescription returns a human-readable description of the filter match.
 func (f *FilterStats) GetMatchDescription() string {
 	parts := []string{}
 
 	if proto, ok := f.Matches["ip_proto"]; ok {
 		parts = append(parts, strings.ToUpper(proto))
 	}
-
 	if srcIP, ok := f.Matches["src_ip"]; ok {
 		parts = append(parts, fmt.Sprintf("src=%s", srcIP))
 	}
-
 	if dstIP, ok := f.Matches["dst_ip"]; ok {
 		parts = append(parts, fmt.Sprintf("dst=%s", dstIP))
 	}
-
 	if srcPort, ok := f.Matches["src_port"]; ok {
 		parts = append(parts, fmt.Sprintf("sport=%s", srcPort))
 	}
-
 	if dstPort, ok := f.Matches["dst_port"]; ok {
 		parts = append(parts, fmt.Sprintf("dport=%s", dstPort))
 	}
