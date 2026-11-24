@@ -17,6 +17,15 @@ A stateful, single-binary **mini Network Packet Broker (NPB)** for Linux Traffic
 
 ### Installation
 
+**Pre-built Binaries (Linux amd64 / arm64):**
+Download the latest archive from [GitHub Releases](https://github.com/shmuto/tcbroker/releases).
+
+**Docker (GHCR multi-arch `linux/amd64`, `linux/arm64`):**
+```sh
+docker pull ghcr.io/shmuto/tcbroker:latest
+```
+
+**From Source:**
 ```sh
 git clone https://github.com/shmuto/tcbroker.git
 cd tcbroker
