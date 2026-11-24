@@ -197,3 +197,46 @@ func TestGetMatchDescription(t *testing.T) {
 		})
 	}
 }
+
+func TestParseFilterStats_MultiAction(t *testing.T) {
+	sample := `filter protocol ip pref 20000 flower chain 0
+filter protocol ip pref 20000 flower chain 0 handle 0x1
+  eth_type ipv4
+  ip_proto udp
+  not_in_hw
+	action order 1: skbmod pipe set dmac 00:00:00:00:20:02
+	index 1 ref 1 bind 1 installed 10 sec used 2 sec
+	Action statistics:
+	Sent 500 bytes 5 pkt (dropped 0, overlimits 0 requeues 0)
+	backlog 0b 0p requeues 0
+	action order 2: mirred (Egress Mirror to device broker2server) continue
+	index 2 ref 1 bind 1 installed 10 sec used 2 sec
+	Action statistics:
+	Sent 500 bytes 5 pkt (dropped 1, overlimits 0 requeues 0)
+	backlog 0b 0p requeues 0`
+
+	filters, err := ParseFilterStats(sample)
+	if err != nil {
+		t.Fatalf("ParseFilterStats failed: %v", err)
+	}
+	if len(filters) != 1 {
+		t.Fatalf("Expected 1 filter, got %d", len(filters))
+	}
+	f := filters[0]
+	if f.Priority != 20000 || f.Handle != "0x1" {
+		t.Errorf("Unexpected pref/handle: pref=%d handle=%s", f.Priority, f.Handle)
+	}
+	if len(f.Actions) != 2 {
+		t.Fatalf("Expected 2 actions, got %d", len(f.Actions))
+	}
+	if f.Actions[0].Type != "skbmod" {
+		t.Errorf("Expected first action type skbmod, got %q", f.Actions[0].Type)
+	}
+	mirred := f.FindMirredAction("broker2server")
+	if mirred == nil {
+		t.Fatal("Expected FindMirredAction to find broker2server")
+	}
+	if mirred.Packets != 5 || mirred.Bytes != 500 || mirred.Dropped != 1 {
+		t.Errorf("Unexpected mirred stats: %+v", mirred)
+	}
+}

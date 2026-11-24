@@ -42,6 +42,7 @@ jobs:
         OUTPUT_NAME="tcbroker-${{ matrix.goos }}-${{ matrix.goarch }}"
         go build -buildvcs=false -ldflags="-w -s -X main.version=${{ steps.version.outputs.VERSION }}" \
           -o "${OUTPUT_NAME}" ./cmd/tcbroker
+        tar -czf "${OUTPUT_NAME}.tar.gz" "${OUTPUT_NAME}"
 
     - name: Upload to Release
       if: github.event_name == 'release'

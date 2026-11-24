@@ -3,24 +3,22 @@ package main
 import (
 	"fmt"
 	"net"
-	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"tcbroker/pkg/config"
 )
 
-var (
-	checkInterfaces bool
-)
+var checkInterfaces bool
 
 var validateCmd = &cobra.Command{
-	Use:   "validate [config-file]",
-	Short: "Validates a configuration file without applying it.",
-	Long: `Reads and validates the given YAML configuration file, checking for
-syntax errors, logical inconsistencies, and optionally verifying that
-specified network interfaces exist on the system.`,
+	Use:   "validate <config-file>",
+	Short: "Validate a configuration file without applying it",
+	Long: `Reads and strictly validates the YAML configuration file, checking for
+unknown fields, syntax errors, logical errors (such as missing proto for port filters
+or self-mirror loops), and optionally verifying that interfaces exist on the system.`,
 	Args: cobra.ExactArgs(1),
-	Run:  validate,
+	RunE: runValidate,
 }
 
 func init() {
@@ -28,72 +26,63 @@ func init() {
 	validateCmd.Flags().BoolVar(&checkInterfaces, "check-interfaces", false, "Verify that specified network interfaces exist on the system")
 }
 
-func validate(cmd *cobra.Command, args []string) {
+func runValidate(cmd *cobra.Command, args []string) error {
 	configFile := args[0]
 
-	fmt.Printf("Validating configuration file: %s\n", configFile)
+	fmt.Printf("Validating %s...\n", configFile)
 
-	// Load and validate the configuration
 	cfg, err := config.Load(configFile)
 	if err != nil {
-		fmt.Printf("❌ Validation failed: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 
-	fmt.Printf("✓ Configuration syntax is valid\n")
-	fmt.Printf("✓ Found %d rule(s)\n", len(cfg.Rules))
+	fmt.Printf("OK: syntax and rules are valid (%d rule(s))\n", len(cfg.Rules))
 
-	// Display configuration summary
 	for i, rule := range cfg.Rules {
-		fmt.Printf("\n  Rule #%d (%s):\n", i+1, rule.Name)
-		fmt.Printf("    Source Interface: %s\n", rule.SrcIntf)
-		fmt.Printf("    Destination Interface: %s\n", rule.DstIntf)
-		fmt.Printf("    Action: mirror\n")
-		if rule.Rewrite != nil {
-			fmt.Printf("    Rewrite:\n")
-			if rule.Rewrite.DstMAC != "" {
-				fmt.Printf("      Dst MAC: %s\n", rule.Rewrite.DstMAC)
+		fmt.Printf("\n  Rule #%d: %s\n", i+1, rule.Name)
+		fmt.Printf("    Source:    %s (%s)\n", rule.Src, rule.EffectiveDirection())
+
+		var dstDescs []string
+		for _, dst := range rule.Dst {
+			desc := dst.Intf
+			if rw := rule.EffectiveRewrite(dst); !rw.IsEmpty() {
+				desc += fmt.Sprintf(" [rewrite: %s]", rw.Summary())
 			}
-			if rule.Rewrite.SrcMAC != "" {
-				fmt.Printf("      Src MAC: %s\n", rule.Rewrite.SrcMAC)
-			}
-			if rule.Rewrite.DstIP != "" {
-				fmt.Printf("      Dst IP: %s\n", rule.Rewrite.DstIP)
-			}
-			if rule.Rewrite.SrcIP != "" {
-				fmt.Printf("      Src IP: %s\n", rule.Rewrite.SrcIP)
-			}
+			dstDescs = append(dstDescs, desc)
 		}
-		fmt.Printf("    Filters: %d\n", len(rule.Filters))
+		fmt.Printf("    Targets:   %s\n", strings.Join(dstDescs, ", "))
+
+		var filterDescs []string
+		for _, f := range rule.EffectiveFilters() {
+			filterDescs = append(filterDescs, f.Summary())
+		}
+		fmt.Printf("    Filters:   %s\n", strings.Join(filterDescs, "; "))
 	}
 
-	// Optionally check if interfaces exist on the system
+	warnings := cfg.Warnings()
+	if len(warnings) > 0 {
+		fmt.Println("\nWarnings:")
+		for _, w := range warnings {
+			fmt.Printf("  ! %s\n", w)
+		}
+	}
+
 	if checkInterfaces {
-		fmt.Printf("\nChecking network interfaces...\n")
-		allInterfacesExist := true
-
-		// Collect unique interfaces
-		interfaceSet := make(map[string]bool)
-		for _, rule := range cfg.Rules {
-			interfaceSet[rule.SrcIntf] = true
-			interfaceSet[rule.DstIntf] = true
-		}
-
-		// Check each unique interface
-		for ifaceName := range interfaceSet {
+		fmt.Println("\nChecking network interfaces...")
+		var missing []string
+		for _, ifaceName := range cfg.AllInterfaces() {
 			if _, errIface := net.InterfaceByName(ifaceName); errIface != nil {
-				fmt.Printf("  ❌ Interface '%s' not found: %v\n", ifaceName, errIface)
-				allInterfacesExist = false
+				fmt.Printf("  MISSING  %s (%v)\n", ifaceName, errIface)
+				missing = append(missing, ifaceName)
 			} else {
-				fmt.Printf("  ✓ Interface '%s' exists\n", ifaceName)
+				fmt.Printf("  OK       %s\n", ifaceName)
 			}
 		}
-
-		if !allInterfacesExist {
-			fmt.Printf("\n❌ Some network interfaces do not exist on this system.\n")
-			os.Exit(1)
+		if len(missing) > 0 {
+			return fmt.Errorf("missing interface(s): %s", strings.Join(missing, ", "))
 		}
 	}
 
-	fmt.Printf("\n✓ Configuration is valid and ready to use!\n")
+	fmt.Println("\nConfiguration is ready to apply.")
+	return nil
 }

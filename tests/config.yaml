@@ -1,24 +1,24 @@
 rules:
-  # Mirror UDP packets from client to server with MAC rewriting
+  # Mirror UDP packets from client to server (with MAC rewrite) and to mirror target
   - name: client-to-server-rewrite
-    src_intf: broker2client
-    dst_intf: broker2server
-    rewrite:
-      # Rewrite dst_mac to server's interface MAC
-      dst_mac: "00:00:00:00:20:02"
+    src: broker2client
+    dst:
+      - intf: broker2server
+        rewrite:
+          dst_mac: "00:00:00:00:20:02"
     filters:
-      - ip_proto: udp
+      - proto: udp
 
   - name: client-to-mirror
-    src_intf: broker2client
-    dst_intf: broker2mirror
+    src: broker2client
+    dst: broker2mirror
     filters:
-      - ip_proto: udp
+      - proto: udp
         src_ip: 192.168.10.0/24
 
-  # Mirror UDP packets to monitoring interface (without rewrite)
+  # Mirror UDP packets from server to monitoring interface (without rewrite)
   - name: server-to-mirror
-    src_intf: broker2server
-    dst_intf: broker2mirror
+    src: broker2server
+    dst: broker2mirror
     filters:
-      - ip_proto: udp
+      - proto: udp

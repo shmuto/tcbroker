@@ -3,76 +3,42 @@ package filter
 import (
 	"fmt"
 	"strconv"
-	"strings"
 )
 
-// BuildTCArgs constructs the arguments for a `tc filter` command based on the
-// provided filter criteria. This function builds arguments for use with clsact qdisc,
-// where the hook (ingress/egress) itself specifies the attachment point.
-func BuildTCArgs(ifaceName, hook, target string, f Filter) []string {
-	args := []string{"filter", "add", "dev", ifaceName, hook}
-
-	// Protocol is required for flower, but we can default to 'all' if not specified
-	// to match any IP traffic.
-	proto := "all"
-	if f.IPProto != "" {
-		// Flower uses 'ip_proto' to match on the protocol name.
-		proto = f.IPProto
-	}
-	args = append(args, "protocol", "ip", "flower") // "protocol ip" is more specific than "all"
-
-	if f.SrcIP != "" {
-		args = append(args, "src_ip", f.SrcIP)
-	}
-	if f.DstIP != "" {
-		args = append(args, "dst_ip", f.DstIP)
-	}
-
-	// Only add protocol matcher if a specific L4 protocol is given
-	if f.IPProto != "" {
-		args = append(args, "ip_proto", proto)
-	}
-
-	if f.SrcPort != 0 {
-		args = append(args, "src_port", strconv.Itoa(f.SrcPort))
-	}
-	if f.DstPort != 0 {
-		args = append(args, "dst_port", strconv.Itoa(f.DstPort))
-	}
-
-	args = append(args, "action", "mirred", "egress", "mirror", "dev", target, "continue")
-	return args
+// BuildSpec holds all parameters required to construct a managed `tc filter add` command.
+type BuildSpec struct {
+	SrcIntf string
+	Hook    string // "ingress" or "egress"
+	Pref    int    // TC filter priority (1-65535); 0 omits explicit pref
+	Handle  string // TC filter handle (e.g., "0x1"); empty omits explicit handle
+	DstIntf string
+	Filter  Filter
+	Rewrite *RewriteOptions
 }
 
-// RewriteOptions specifies packet rewrite parameters.
-type RewriteOptions struct {
-	DstMAC string
-	SrcMAC string
-	DstIP  string
-	SrcIP  string
-}
+// BuildTCArgs constructs arguments for `tc filter add` using clsact + flower + optional
+// skbmod/pedit/csum + mirred mirror + continue.
+func BuildTCArgs(spec BuildSpec) []string {
+	args := []string{"filter", "add", "dev", spec.SrcIntf, spec.Hook}
 
-// BuildTCArgsWithRewrite constructs tc filter arguments with packet rewrite support.
-// Always uses mirror action with optional MAC/IP rewriting.
-func BuildTCArgsWithRewrite(ifaceName, hook, target string, f Filter, rewrite *RewriteOptions) []string {
-	args := []string{"filter", "add", "dev", ifaceName, hook}
-
-	// Protocol setup
-	proto := "all"
-	if f.IPProto != "" {
-		proto = f.IPProto
+	if spec.Pref > 0 {
+		args = append(args, "pref", strconv.Itoa(spec.Pref))
 	}
 	args = append(args, "protocol", "ip", "flower")
+	if spec.Handle != "" {
+		args = append(args, "handle", spec.Handle)
+	}
 
 	// Match conditions
+	f := spec.Filter
 	if f.SrcIP != "" {
 		args = append(args, "src_ip", f.SrcIP)
 	}
 	if f.DstIP != "" {
 		args = append(args, "dst_ip", f.DstIP)
 	}
-	if f.IPProto != "" {
-		args = append(args, "ip_proto", proto)
+	if f.Proto != "" {
+		args = append(args, "ip_proto", f.Proto)
 	}
 	if f.SrcPort != 0 {
 		args = append(args, "src_port", strconv.Itoa(f.SrcPort))
@@ -81,62 +47,72 @@ func BuildTCArgsWithRewrite(ifaceName, hook, target string, f Filter, rewrite *R
 		args = append(args, "dst_port", strconv.Itoa(f.DstPort))
 	}
 
-	// Add packet rewrite actions
-	if rewrite != nil && (rewrite.DstMAC != "" || rewrite.SrcMAC != "" || rewrite.DstIP != "" || rewrite.SrcIP != "") {
-		// MAC address rewriting using skbmod (cleaner than pedit for MAC operations)
-		if rewrite.DstMAC != "" || rewrite.SrcMAC != "" {
-			args = append(args, "action", "skbmod")
-			if rewrite.DstMAC != "" {
-				args = append(args, "set", "dmac", rewrite.DstMAC)
+	// Optional packet header rewrite actions
+	if !spec.Rewrite.IsEmpty() {
+		rw := spec.Rewrite
+
+		// MAC address rewriting using skbmod
+		if rw.DstMAC != "" || rw.SrcMAC != "" {
+			args = append(args, "action", "skbmod", "set")
+			if rw.DstMAC != "" {
+				args = append(args, "dmac", rw.DstMAC)
 			}
-			if rewrite.SrcMAC != "" {
-				args = append(args, "set", "smac", rewrite.SrcMAC)
+			if rw.SrcMAC != "" {
+				args = append(args, "smac", rw.SrcMAC)
 			}
 			args = append(args, "pipe")
 		}
 
-		// IP address rewriting using pedit (skbmod doesn't support IP)
-		if rewrite.DstIP != "" || rewrite.SrcIP != "" {
+		// IPv4 address rewriting using pedit + checksum recalculation using csum
+		if rw.DstIP != "" || rw.SrcIP != "" {
 			args = append(args, "action", "pedit", "ex")
-
-			if rewrite.DstIP != "" {
-				args = append(args, "munge", "ip", "dst", "set", rewrite.DstIP)
+			if rw.DstIP != "" {
+				args = append(args, "munge", "ip", "dst", "set", rw.DstIP)
 			}
-			if rewrite.SrcIP != "" {
-				args = append(args, "munge", "ip", "src", "set", rewrite.SrcIP)
+			if rw.SrcIP != "" {
+				args = append(args, "munge", "ip", "src", "set", rw.SrcIP)
 			}
+			args = append(args, "pipe")
 
-			// Add checksum recalculation after IP modification
-			checksums := []string{"ip"}
-			switch f.IPProto {
+			// Recalculate IPv4 header checksum and L4 checksum(s).
+			// Each token must be a separate argv element for tc.
+			args = append(args, "action", "csum", "ip4h")
+			switch f.Proto {
 			case "tcp":
-				checksums = append(checksums, "tcp")
+				args = append(args, "and", "tcp")
 			case "udp":
-				checksums = append(checksums, "udp")
+				args = append(args, "and", "udp")
 			case "icmp":
-				checksums = append(checksums, "icmp")
+				args = append(args, "and", "icmp")
+			default:
+				// Protocol not restricted: cover common L4 checksums (kernel skips non-matching ones)
+				args = append(args, "and", "tcp", "and", "udp", "and", "icmp")
 			}
-
-			args = append(args, "pipe", "action", "csum", strings.Join(checksums, " and "))
+			args = append(args, "pipe")
 		}
 	}
 
-	// Final mirred action - always mirror
-	args = append(args, "action", "mirred", "egress", "mirror", "dev", target, "continue")
-
+	// Final mirred mirror action; continue lets subsequent filters evaluate the packet
+	args = append(args, "action", "mirred", "egress", "mirror", "dev", spec.DstIntf, "continue")
 	return args
 }
 
-// ValidateRewriteOptions validates rewrite options
+// BuildDeleteArgs constructs arguments for deleting a single managed filter by pref.
+func BuildDeleteArgs(srcIntf, hook string, pref int, handle string) []string {
+	args := []string{"filter", "del", "dev", srcIntf, hook, "pref", strconv.Itoa(pref)}
+	if handle != "" {
+		args = append(args, "handle", handle, "flower")
+	}
+	return args
+}
+
+// ValidateRewriteOptions validates that rewrite options contain at least one field when non-nil.
 func ValidateRewriteOptions(rewrite *RewriteOptions) error {
 	if rewrite == nil {
 		return nil
 	}
-
-	// Basic validation (more detailed validation should be in config package)
-	if rewrite.DstMAC == "" && rewrite.SrcMAC == "" && rewrite.DstIP == "" && rewrite.SrcIP == "" {
+	if rewrite.IsEmpty() {
 		return fmt.Errorf("at least one rewrite option must be specified")
 	}
-
 	return nil
 }
