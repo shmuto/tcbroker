@@ -1,21 +1,28 @@
 # Multi-stage build for tcbroker
-# Stage 1: Build static binary with embedded mini-NPB WebUI
-FROM golang:1.24-alpine AS builder
+# Stage 1: Fast native cross-compilation on the build host
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+ARG VERSION=""
 
 WORKDIR /build
 
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY . .
+COPY VERSION ./
+COPY cmd ./cmd
+COPY pkg ./pkg
 
-RUN VERSION=$(cat VERSION) && \
-    CGO_ENABLED=0 GOOS=linux go build -buildvcs=false \
-      -ldflags="-w -s -X main.version=${VERSION}" \
+RUN VER="${VERSION:-$(cat VERSION)}" && \
+    CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+      go build -buildvcs=false \
+      -ldflags="-w -s -X main.version=${VER}" \
       -o tcbroker ./cmd/tcbroker
 
 # Stage 2: Minimal runtime image
-FROM alpine:latest
+FROM alpine:3.21
 
 # iproute2 provides the `tc` utility required for Linux Traffic Control operations
 RUN apk add --no-cache iproute2
