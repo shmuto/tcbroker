@@ -1,14 +1,17 @@
 # tcbroker
 
-A stateful, declarative CLI tool for managing Linux Traffic Control (TC) packet mirroring.
+A stateful, single-binary **mini Network Packet Broker (NPB)** for Linux Traffic Control (`tc`) with an embedded real-time WebUI and Prometheus `/metrics`.
+
+![tcbroker Mini-NPB WebUI](docs/images/webui-dashboard.png)
 
 ## Features
 
+- **Embedded Mini-NPB WebUI & Metrics (`tcbroker serve`)**: Zero-dependency `go:embed` dashboard (no external CDN) with 3-column SVG packet flow map, live PPS/bps sparklines, Dry-Run/Apply modals, YAML export, and Prometheus `/metrics`
 - **Stateful & Config-less Operations**: Check `status`, monitor live rates (`--watch`), or `delete`/`stop` rules without passing the config file again
 - **Idempotent Apply & Rollback**: Re-applying a config computes minimal changes, preserves counters on unchanged filters, and rolls back automatically on error
 - **Safe Coexistence with Other TC Tools**: Tracks its own filters in a dedicated priority range (`20000–29999`) and never deletes external TC filters or pre-existing `clsact` qdiscs
-- **Flexible YAML Configuration**: Supports `ingress`/`egress`/`both`, single or multiple destinations, optional `filters` (omit to match all IPv4), per-destination MAC/IP rewriting, and strict typo validation
-- **Drift Detection**: Detects if managed filters were removed externally and restores them on the next `apply`
+- **NPB Packet Conditioning**: Supports port labels (`ports:`), non-destructive VLAN tag push/pop (`vlan:`), non-dropping mirror bandwidth caps (`rate_limit:`), MAC/IP header rewriting (`rewrite:`), `ingress`/`egress`/`both`, and strict typo validation
+- **Drift Detection**: Detects if managed filters were removed externally and restores them on the next `apply` or one-click `Reconcile`
 
 ## Quick Start
 
