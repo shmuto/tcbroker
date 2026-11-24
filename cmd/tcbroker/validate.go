@@ -48,15 +48,36 @@ func cmdValidate(_ string, args []string) error {
 
 	fmt.Printf("OK: syntax and rules are valid (%d rule(s))\n", len(cfg.Rules))
 
+	if len(cfg.Ports) > 0 {
+		fmt.Printf("Ports: %d labeled interface(s)\n", len(cfg.Ports))
+	}
+
 	for i, rule := range cfg.Rules {
 		fmt.Printf("\n  Rule #%d: %s\n", i+1, rule.Name)
-		fmt.Printf("    Source:    %s (%s)\n", rule.Src, rule.EffectiveDirection())
+		srcLabel := rule.Src
+		if p, ok := cfg.Ports[rule.Src]; ok && p.Label != "" {
+			srcLabel = fmt.Sprintf("%s (%s)", p.Label, rule.Src)
+		}
+		fmt.Printf("    Source:    %s (%s)\n", srcLabel, rule.EffectiveDirection())
 
 		var dstDescs []string
 		for _, dst := range rule.Dst {
 			desc := dst.Intf
+			if p, ok := cfg.Ports[dst.Intf]; ok && p.Label != "" {
+				desc = fmt.Sprintf("%s (%s)", p.Label, dst.Intf)
+			}
+			var mods []string
+			if rl := rule.EffectiveRateLimit(dst); !rl.IsEmpty() {
+				mods = append(mods, rl.Summary())
+			}
+			if vl := rule.EffectiveVLAN(dst); !vl.IsEmpty() {
+				mods = append(mods, vl.Summary())
+			}
 			if rw := rule.EffectiveRewrite(dst); !rw.IsEmpty() {
-				desc += fmt.Sprintf(" [rewrite: %s]", rw.Summary())
+				mods = append(mods, "rw:"+rw.Summary())
+			}
+			if len(mods) > 0 {
+				desc += fmt.Sprintf(" [%s]", strings.Join(mods, ", "))
 			}
 			dstDescs = append(dstDescs, desc)
 		}

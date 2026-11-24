@@ -231,6 +231,78 @@ func TestConfig_Validate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "valid ports, vlan push, and rate_limit",
+			config: &Config{
+				Ports: map[string]PortConfig{
+					"eth0": {Label: "wan-uplink", Role: "tap"},
+					"eth1": {Label: "suricata-ids", Role: "tool"},
+				},
+				Rules: []Rule{
+					{
+						Name:      "npb-rule",
+						Src:       "eth0",
+						RateLimit: &filter.RateLimitOptions{Rate: "500mbit", Burst: "2mb"},
+						Dst:       Destinations{{Intf: "eth1", VLAN: &filter.VLANOptions{Push: 100}}},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid port role",
+			config: &Config{
+				Ports: map[string]PortConfig{
+					"eth0": {Label: "wan", Role: "router"},
+				},
+				Rules: []Rule{
+					{Name: "r1", Src: "eth0", Dst: Destinations{{Intf: "eth1"}}},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "vlan push out of range",
+			config: &Config{
+				Rules: []Rule{
+					{
+						Name: "r1",
+						Src:  "eth0",
+						Dst:  Destinations{{Intf: "eth1"}},
+						VLAN: &filter.VLANOptions{Push: 5000},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "vlan push and pop conflict",
+			config: &Config{
+				Rules: []Rule{
+					{
+						Name: "r1",
+						Src:  "eth0",
+						Dst:  Destinations{{Intf: "eth1"}},
+						VLAN: &filter.VLANOptions{Push: 100, Pop: true},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid rate_limit syntax",
+			config: &Config{
+				Rules: []Rule{
+					{
+						Name:      "r1",
+						Src:       "eth0",
+						Dst:       Destinations{{Intf: "eth1"}},
+						RateLimit: &filter.RateLimitOptions{Rate: "fast"},
+					},
+				},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tc := range testCases {

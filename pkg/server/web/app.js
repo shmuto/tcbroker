@@ -270,6 +270,26 @@
       `<polyline points="${pts.join(' ')}" fill="none" stroke="${color}" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"></polyline>`;
   }
 
+  function portDisplay(data, intf) {
+    const p = data.ports && data.ports[intf];
+    if (p && p.label) {
+      return { primary: p.label, sub: intf, combined: `${p.label} (${intf})` };
+    }
+    return { primary: intf, sub: '', combined: intf };
+  }
+
+  function formatActions(m) {
+    const parts = [];
+    if (m.rate_limit && m.rate_limit.rate) parts.push(`cap:${m.rate_limit.rate}`);
+    if (m.vlan) {
+      if (m.vlan.push) parts.push(`vlan:+${m.vlan.push}`);
+      else if (m.vlan.pop) parts.push('vlan:pop');
+    }
+    const rw = formatRewrite(m.rewrite);
+    if (rw) parts.push(rw);
+    return parts.join(' · ');
+  }
+
   function renderTopology(data) {
     const rules = data.rules || [];
     const emptyEl = $('topology-empty');
@@ -325,6 +345,7 @@
       .map((s) => {
         const info = ifaceMap.get(s.name);
         const linkState = info ? info.state : 'UP';
+        const disp = portDisplay(data, s.name);
         const related = !focus || (focus.type === 'source' && focus.id === s.name) ||
           (focus.type === 'rule' && s.rules.has(focus.id)) ||
           (focus.type === 'tool' && rules.some((r) => r.src === s.name && (r.destinations || []).includes(focus.id)));
@@ -333,9 +354,10 @@
           <div class="topo-node ${sel ? 'selected' : ''} ${related ? '' : 'dimmed'}"
                data-node-type="source" data-node-id="${escapeHTML(s.name)}">
             <div class="node-top">
-              <span class="node-name mono">${escapeHTML(s.name)}</span>
+              <span class="node-name ${disp.sub ? '' : 'mono'}">${escapeHTML(disp.primary)}</span>
               <span class="status-pill status-${escapeHTML(linkState)}">${escapeHTML(linkState)}</span>
             </div>
+            ${disp.sub ? `<div class="node-sublabel">${escapeHTML(disp.sub)}</div>` : ''}
             <div class="node-meta mono">
               <span>${s.ruleCount} rule${s.ruleCount > 1 ? 's' : ''}</span>
               <span>${formatRate(s.bps)}</span>
@@ -355,13 +377,24 @@
         const sel = state.selected && state.selected.type === 'rule' && state.selected.id === r.name;
 
         const matchSet = new Set();
+        const vlanSet = new Set();
+        const capSet = new Set();
         let hasRewrite = false;
         for (const fs of r.filters || []) {
           matchSet.add(formatMatch(fs.managed.filter || {}));
           if (fs.managed.rewrite) hasRewrite = true;
+          if (fs.managed.vlan) {
+            if (fs.managed.vlan.push) vlanSet.add(`vlan:+${fs.managed.vlan.push}`);
+            else if (fs.managed.vlan.pop) vlanSet.add('vlan:pop');
+          }
+          if (fs.managed.rate_limit && fs.managed.rate_limit.rate) {
+            capSet.add(`cap:${fs.managed.rate_limit.rate}`);
+          }
         }
         const chips = Array.from(matchSet).slice(0, 3).map((m) => `<span class="chip">${escapeHTML(m)}</span>`);
         if (matchSet.size > 3) chips.push(`<span class="chip">+${matchSet.size - 3}</span>`);
+        for (const v of vlanSet) chips.push(`<span class="chip chip-vlan">${escapeHTML(v)}</span>`);
+        for (const c of capSet) chips.push(`<span class="chip chip-cap">${escapeHTML(c)}</span>`);
         if (hasRewrite) chips.push('<span class="chip chip-rw">rewrite</span>');
 
         return `
@@ -385,6 +418,7 @@
       .map((t) => {
         const info = ifaceMap.get(t.name);
         const linkState = info ? info.state : 'UP';
+        const disp = portDisplay(data, t.name);
         const related = !focus ||
           (focus.type === 'tool' && focus.id === t.name) ||
           (focus.type === 'rule' && t.rules.has(focus.id)) ||
@@ -394,9 +428,10 @@
           <div class="topo-node ${sel ? 'selected' : ''} ${related ? '' : 'dimmed'}"
                data-node-type="tool" data-node-id="${escapeHTML(t.name)}">
             <div class="node-top">
-              <span class="node-name mono">${escapeHTML(t.name)}</span>
+              <span class="node-name ${disp.sub ? '' : 'mono'}">${escapeHTML(disp.primary)}</span>
               <span class="status-pill status-${escapeHTML(linkState)}">${escapeHTML(linkState)}</span>
             </div>
+            ${disp.sub ? `<div class="node-sublabel">${escapeHTML(disp.sub)}</div>` : ''}
             <div class="node-meta mono">
               <span>${t.pps.toFixed(0)} pps</span>
               <span>${formatRate(t.bps)}</span>
@@ -456,6 +491,17 @@
       };
     };
 
+    // Scale stroke width subtly by relative rule throughput (1.6px..4.2px)
+    let maxBps = 1;
+    for (const r of rules) {
+      const rt = state.ratesByRule.get(r.name);
+      if (rt && rt.bps > maxBps) maxBps = rt.bps;
+    }
+    const widthForBps = (bps, highlighted) => {
+      const base = 1.6 + Math.min(bps / maxBps, 1) * 2.4;
+      return (highlighted ? Math.max(base + 0.6, 2.8) : base).toFixed(2);
+    };
+
     const focus = state.hovered || state.selected;
     const paths = [];
 
@@ -466,6 +512,7 @@
 
     for (const r of rules) {
       const drifted = r.status !== 'ACTIVE';
+      const ruleRate = state.ratesByRule.get(r.name) || { bps: 0 };
       const srcPt = posOf('source', r.src, 'right');
       const ruleL = posOf('rule', r.name, 'left');
       const ruleR = posOf('rule', r.name, 'right');
@@ -476,21 +523,30 @@
         (focus.type === 'tool' && (r.destinations || []).includes(focus.id));
 
       if (srcPt && ruleL) {
+        const hl = Boolean(focus && srcRelated);
         const cls = ['wire', drifted ? 'wire-drift' : 'wire-active'];
         if (focus) cls.push(srcRelated ? 'wire-highlight' : 'wire-dim');
-        paths.push(`<path class="${cls.join(' ')}" d="${makeCurve(srcPt, ruleL)}"></path>`);
+        paths.push(`<path class="${cls.join(' ')}" style="stroke-width:${widthForBps(ruleRate.bps, hl)}px" d="${makeCurve(srcPt, ruleL)}"></path>`);
       }
 
       for (const dst of r.destinations || []) {
         const dstPt = posOf('tool', dst, 'left');
         if (ruleR && dstPt) {
+          let dstBps = 0;
+          for (const fs of r.filters || []) {
+            if (fs.managed.dst_intf === dst) {
+              const frt = state.ratesByFilter.get(`${fs.managed.src_intf}:${fs.managed.hook}:${fs.managed.pref}`);
+              if (frt) dstBps += frt.bps;
+            }
+          }
           const dstRelated = !focus ||
             (focus.type === 'rule' && focus.id === r.name) ||
             (focus.type === 'source' && focus.id === r.src) ||
             (focus.type === 'tool' && focus.id === dst);
+          const hl = Boolean(focus && dstRelated);
           const cls = ['wire', drifted ? 'wire-drift' : 'wire-active'];
           if (focus) cls.push(dstRelated ? 'wire-highlight' : 'wire-dim');
-          paths.push(`<path class="${cls.join(' ')}" d="${makeCurve(ruleR, dstPt)}"></path>`);
+          paths.push(`<path class="${cls.join(' ')}" style="stroke-width:${widthForBps(dstBps, hl)}px" d="${makeCurve(ruleR, dstPt)}"></path>`);
         }
       }
     }
@@ -524,6 +580,13 @@
       $('inspector-title').textContent = `Rule: ${sel.id}`;
       $('inspector-subtitle').textContent = `${filteredRows.length} filter(s) installed for this rule.`;
       if (!data.read_only) {
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'btn btn-secondary btn-xs';
+        editBtn.textContent = 'Edit YAML';
+        editBtn.addEventListener('click', () => $('btn-yaml').click());
+        actionsEl.appendChild(editBtn);
+
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
         delBtn.className = 'btn btn-danger-ghost btn-xs';
@@ -532,8 +595,9 @@
         actionsEl.appendChild(delBtn);
       }
     } else {
-      $('inspector-title').textContent = `${sel.type === 'source' ? 'Source' : 'Tool'} Port: ${sel.id}`;
-      $('inspector-subtitle').textContent = `${filteredRows.length} filter(s) connected to ${sel.id}.`;
+      const disp = portDisplay(data, sel.id);
+      $('inspector-title').textContent = `${sel.type === 'source' ? 'Source' : 'Tool'} Port: ${disp.combined}`;
+      $('inspector-subtitle').textContent = `${filteredRows.length} filter(s) connected to ${disp.combined}.`;
     }
 
     const tbody = $('filters-tbody');
@@ -547,15 +611,17 @@
         const m = fs.managed;
         const rt = state.ratesByFilter.get(`${m.src_intf}:${m.hook}:${m.pref}`) || { pps: 0, bps: 0 };
         const st = fs.present ? 'ACTIVE' : 'MISSING';
-        const rw = formatRewrite(m.rewrite) || '—';
+        const actions = formatActions(m) || '—';
+        const srcDisp = portDisplay(data, m.src_intf).primary;
+        const dstDisp = portDisplay(data, m.dst_intf).primary;
         return `
           <tr>
             <td><strong>${escapeHTML(rule.name)}</strong></td>
             <td class="mono">${m.pref}</td>
             <td><span class="status-pill status-${st}">${st}</span></td>
-            <td class="mono">${escapeHTML(m.src_intf)} (${escapeHTML(m.hook)}) &rarr; ${escapeHTML(m.dst_intf)}</td>
+            <td class="mono">${escapeHTML(srcDisp)} (${escapeHTML(m.hook)}) &rarr; ${escapeHTML(dstDisp)}</td>
             <td class="mono">${escapeHTML(formatMatch(m.filter || {}))}</td>
-            <td class="mono">${escapeHTML(rw)}</td>
+            <td class="mono">${escapeHTML(actions)}</td>
             <td class="num">${fs.packets.toLocaleString()}</td>
             <td class="num">${formatBytes(fs.bytes)}</td>
             <td class="num">${rt.pps.toFixed(1)}</td>
@@ -613,6 +679,8 @@
     const dport = $('f-dport').value.trim();
     const sip = $('f-sip').value.trim();
     const dip = $('f-dip').value.trim();
+    const vlanPush = $('f-vlan-push').value.trim();
+    const rateLimit = $('f-rate-limit').value.trim();
     const rwDmac = $('f-rw-dmac').value.trim();
     const rwSmac = $('f-rw-smac').value.trim();
     const rwDip = $('f-rw-dip').value.trim();
@@ -635,6 +703,14 @@
       for (const d of dsts) lines.push(`      - ${JSON.stringify(d)}`);
     }
 
+    if (vlanPush) {
+      lines.push('    vlan:');
+      lines.push(`      push: ${Number(vlanPush)}`);
+    }
+    if (rateLimit) {
+      lines.push('    rate_limit:');
+      lines.push(`      rate: ${JSON.stringify(rateLimit)}`);
+    }
     if (rwDmac || rwSmac || rwDip || rwSip) {
       lines.push('    rewrite:');
       if (rwDmac) lines.push(`      dst_mac: ${JSON.stringify(rwDmac)}`);
@@ -656,6 +732,9 @@
     const existing = (state.latest && state.latest.config_yaml || '').trim();
     if (!existing || existing === 'rules: []') {
       return `rules:\n${lines.join('\n')}\n`;
+    }
+    if (existing.endsWith('rules: []')) {
+      return `${existing.slice(0, -'rules: []'.length)}rules:\n${lines.join('\n')}\n`;
     }
     return `${existing}\n${lines.join('\n')}\n`;
   }

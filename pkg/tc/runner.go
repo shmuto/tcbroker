@@ -52,11 +52,6 @@ func (r *Runner) out() io.Writer {
 	return r.Output
 }
 
-// Run executes a mutating tc command (respecting DryRun and Debug).
-func (r *Runner) Run(args ...string) (string, string, error) {
-	return r.RunWrite(args...)
-}
-
 // RunWrite executes a mutating tc command. In DryRun mode it logs the command without executing it.
 func (r *Runner) RunWrite(args ...string) (string, string, error) {
 	commandString := fmt.Sprintf("tc %s", strings.Join(args, " "))

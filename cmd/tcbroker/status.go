@@ -164,8 +164,15 @@ func renderStatusReport(report *manager.StatusReport, ruleFilter string, prev *m
 		return
 	}
 
+	formatPort := func(intf string) string {
+		if p, ok := report.Ports[intf]; ok && p.Label != "" {
+			return fmt.Sprintf("%s(%s)", p.Label, intf)
+		}
+		return intf
+	}
+
 	if ruleFilter != "" && len(report.Rules) == 1 {
-		renderRuleDetail(report.Rules[0], prev, elapsedSec)
+		renderRuleDetail(report.Rules[0], formatPort, prev, elapsedSec)
 		return
 	}
 
@@ -185,7 +192,11 @@ func renderStatusReport(report *manager.StatusReport, ruleFilter string, prev *m
 
 	for _, r := range report.Rules {
 		dir := strings.Join(r.Hooks, ",")
-		dsts := strings.Join(r.Destinations, ",")
+		dstLabels := make([]string, 0, len(r.Destinations))
+		for _, d := range r.Destinations {
+			dstLabels = append(dstLabels, formatPort(d))
+		}
+		dsts := strings.Join(dstLabels, ",")
 		filtersCol := fmt.Sprintf("%d/%d", r.ActiveFilters, r.TotalFilters)
 
 		if prev != nil && elapsedSec > 0 {
@@ -201,11 +212,11 @@ func renderStatusReport(report *manager.StatusReport, ruleFilter string, prev *m
 				}
 			}
 			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%.1f\t%s\t%d\n",
-				r.Name, r.Health, r.SrcIntf, dir, dsts, filtersCol,
+				r.Name, r.Health, formatPort(r.SrcIntf), dir, dsts, filtersCol,
 				r.Packets, tc.FormatBytes(r.Bytes), pps, tc.FormatByteRate(bps), r.Dropped)
 		} else {
 			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%d\n",
-				r.Name, r.Health, r.SrcIntf, dir, dsts, filtersCol,
+				r.Name, r.Health, formatPort(r.SrcIntf), dir, dsts, filtersCol,
 				r.Packets, tc.FormatBytes(r.Bytes), r.Dropped)
 		}
 	}
@@ -223,10 +234,14 @@ func renderStatusReport(report *manager.StatusReport, ruleFilter string, prev *m
 	}
 }
 
-func renderRuleDetail(r manager.RuleStatus, prev *manager.StatusReport, elapsedSec float64) {
+func renderRuleDetail(r manager.RuleStatus, formatPort func(string) string, prev *manager.StatusReport, elapsedSec float64) {
+	dstLabels := make([]string, 0, len(r.Destinations))
+	for _, d := range r.Destinations {
+		dstLabels = append(dstLabels, formatPort(d))
+	}
 	fmt.Printf("Rule:    %s (%s)\n", r.Name, r.Health)
-	fmt.Printf("Source:  %s (%s)\n", r.SrcIntf, strings.Join(r.Hooks, ", "))
-	fmt.Printf("Targets: %s\n", strings.Join(r.Destinations, ", "))
+	fmt.Printf("Source:  %s (%s)\n", formatPort(r.SrcIntf), strings.Join(r.Hooks, ", "))
+	fmt.Printf("Targets: %s\n", strings.Join(dstLabels, ", "))
 	fmt.Printf("Totals:  %d packets, %s, %d dropped\n\n", r.Packets, tc.FormatBytes(r.Bytes), r.Dropped)
 
 	prevFilters := make(map[string]manager.FilterStatus)
@@ -239,9 +254,9 @@ func renderRuleDetail(r manager.RuleStatus, prev *manager.StatusReport, elapsedS
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 	if prev != nil && elapsedSec > 0 {
-		_, _ = fmt.Fprintln(w, "PREF\tSTATE\tHOOK\tDST\tMATCH\tREWRITE\tPACKETS\tBYTES\tPPS\tRATE\tDROPPED")
+		_, _ = fmt.Fprintln(w, "PREF\tSTATE\tHOOK\tDST\tMATCH\tACTIONS\tPACKETS\tBYTES\tPPS\tRATE\tDROPPED")
 	} else {
-		_, _ = fmt.Fprintln(w, "PREF\tSTATE\tHOOK\tDST\tMATCH\tREWRITE\tPACKETS\tBYTES\tDROPPED")
+		_, _ = fmt.Fprintln(w, "PREF\tSTATE\tHOOK\tDST\tMATCH\tACTIONS\tPACKETS\tBYTES\tDROPPED")
 	}
 
 	for _, fs := range r.Filters {
@@ -249,9 +264,19 @@ func renderRuleDetail(r manager.RuleStatus, prev *manager.StatusReport, elapsedS
 		if !fs.Present {
 			st = "MISSING"
 		}
-		rw := "-"
+		var acts []string
+		if !fs.Managed.RateLimit.IsEmpty() {
+			acts = append(acts, fs.Managed.RateLimit.Summary())
+		}
+		if !fs.Managed.VLAN.IsEmpty() {
+			acts = append(acts, fs.Managed.VLAN.Summary())
+		}
 		if !fs.Managed.Rewrite.IsEmpty() {
-			rw = fs.Managed.Rewrite.Summary()
+			acts = append(acts, fs.Managed.Rewrite.Summary())
+		}
+		actCol := "-"
+		if len(acts) > 0 {
+			actCol = strings.Join(acts, " ")
 		}
 
 		if prev != nil && elapsedSec > 0 {
@@ -266,13 +291,13 @@ func renderRuleDetail(r manager.RuleStatus, prev *manager.StatusReport, elapsedS
 				}
 			}
 			_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%.1f\t%s\t%d\n",
-				fs.Managed.Pref, st, fs.Managed.Hook, fs.Managed.DstIntf,
-				fs.Managed.Filter.Summary(), rw,
+				fs.Managed.Pref, st, fs.Managed.Hook, formatPort(fs.Managed.DstIntf),
+				fs.Managed.Filter.Summary(), actCol,
 				fs.Packets, tc.FormatBytes(fs.Bytes), pps, tc.FormatByteRate(bps), fs.Dropped)
 		} else {
 			_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%d\n",
-				fs.Managed.Pref, st, fs.Managed.Hook, fs.Managed.DstIntf,
-				fs.Managed.Filter.Summary(), rw,
+				fs.Managed.Pref, st, fs.Managed.Hook, formatPort(fs.Managed.DstIntf),
+				fs.Managed.Filter.Summary(), actCol,
 				fs.Packets, tc.FormatBytes(fs.Bytes), fs.Dropped)
 		}
 	}

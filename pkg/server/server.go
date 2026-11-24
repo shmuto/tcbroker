@@ -94,16 +94,17 @@ func (s *Server) Handler() http.Handler {
 }
 
 type statusPayload struct {
-	Version      string               `json:"version"`
-	ReadOnly     bool                 `json:"read_only"`
-	AuthRequired bool                 `json:"auth_required"`
-	Demo         bool                 `json:"demo"`
-	StatePath    string               `json:"state_path"`
-	ConfigPath   string               `json:"config_path,omitempty"`
-	HasDrift     bool                 `json:"has_drift"`
-	Rules        []manager.RuleStatus `json:"rules"`
-	Interfaces   []InterfaceInfo      `json:"interfaces"`
-	ConfigYAML   string               `json:"config_yaml"`
+	Version      string                       `json:"version"`
+	ReadOnly     bool                         `json:"read_only"`
+	AuthRequired bool                         `json:"auth_required"`
+	Demo         bool                         `json:"demo"`
+	StatePath    string                       `json:"state_path"`
+	ConfigPath   string                       `json:"config_path,omitempty"`
+	HasDrift     bool                         `json:"has_drift"`
+	Ports        map[string]config.PortConfig `json:"ports,omitempty"`
+	Rules        []manager.RuleStatus         `json:"rules"`
+	Interfaces   []InterfaceInfo              `json:"interfaces"`
+	ConfigYAML   string                       `json:"config_yaml"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -129,6 +130,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		StatePath:    report.StatePath,
 		ConfigPath:   report.ConfigPath,
 		HasDrift:     report.HasDrift(),
+		Ports:        report.Ports,
 		Rules:        report.Rules,
 		Interfaces:   s.opts.InterfaceLister(),
 		ConfigYAML:   yamlStr,

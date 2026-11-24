@@ -1,23 +1,24 @@
 package filter
 
 import (
-	"fmt"
 	"strconv"
 )
 
 // BuildSpec holds all parameters required to construct a managed `tc filter add` command.
 type BuildSpec struct {
-	SrcIntf string
-	Hook    string // "ingress" or "egress"
-	Pref    int    // TC filter priority (1-65535); 0 omits explicit pref
-	Handle  string // TC filter handle (e.g., "0x1"); empty omits explicit handle
-	DstIntf string
-	Filter  Filter
-	Rewrite *RewriteOptions
+	SrcIntf   string
+	Hook      string // "ingress" or "egress"
+	Pref      int    // TC filter priority (1-65535); 0 omits explicit pref
+	Handle    string // TC filter handle (e.g., "0x1"); empty omits explicit handle
+	DstIntf   string
+	Filter    Filter
+	Rewrite   *RewriteOptions
+	VLAN      *VLANOptions
+	RateLimit *RateLimitOptions
 }
 
 // BuildTCArgs constructs arguments for `tc filter add` using clsact + flower + optional
-// skbmod/pedit/csum + mirred mirror + continue.
+// police / skbmod / pedit / csum / vlan + mirred mirror.
 func BuildTCArgs(spec BuildSpec) []string {
 	args := []string{"filter", "add", "dev", spec.SrcIntf, spec.Hook}
 
@@ -45,6 +46,17 @@ func BuildTCArgs(spec BuildSpec) []string {
 	}
 	if f.DstPort != 0 {
 		args = append(args, "dst_port", strconv.Itoa(f.DstPort))
+	}
+
+	// Optional safe rate limiting: conform-exceed continue/pipe skips mirroring on exceed
+	// without ever dropping original production traffic.
+	if !spec.RateLimit.IsEmpty() {
+		args = append(args,
+			"action", "police",
+			"rate", spec.RateLimit.Rate,
+			"burst", spec.RateLimit.EffectiveBurst(),
+			"conform-exceed", "continue/pipe",
+		)
 	}
 
 	// Optional packet header rewrite actions
@@ -75,7 +87,6 @@ func BuildTCArgs(spec BuildSpec) []string {
 			args = append(args, "pipe")
 
 			// Recalculate IPv4 header checksum and L4 checksum(s).
-			// Each token must be a separate argv element for tc.
 			args = append(args, "action", "csum", "ip4h")
 			switch f.Proto {
 			case "tcp":
@@ -85,10 +96,24 @@ func BuildTCArgs(spec BuildSpec) []string {
 			case "icmp":
 				args = append(args, "and", "icmp")
 			default:
-				// Protocol not restricted: cover common L4 checksums (kernel skips non-matching ones)
 				args = append(args, "and", "tcp", "and", "udp", "and", "icmp")
 			}
 			args = append(args, "pipe")
+		}
+	}
+
+	// Optional VLAN tag manipulation
+	if !spec.VLAN.IsEmpty() {
+		if spec.VLAN.Push > 0 {
+			// Push VLAN tag for the mirrored copy, then pop it back after mirred so the
+			// original packet continues unmodified.
+			args = append(args, "action", "vlan", "push", "id", strconv.Itoa(spec.VLAN.Push), "pipe")
+			args = append(args, "action", "mirred", "egress", "mirror", "dev", spec.DstIntf, "pipe")
+			args = append(args, "action", "vlan", "pop", "continue")
+			return args
+		}
+		if spec.VLAN.Pop {
+			args = append(args, "action", "vlan", "pop", "pipe")
 		}
 	}
 
@@ -104,15 +129,4 @@ func BuildDeleteArgs(srcIntf, hook string, pref int, handle string) []string {
 		args = append(args, "handle", handle, "flower")
 	}
 	return args
-}
-
-// ValidateRewriteOptions validates that rewrite options contain at least one field when non-nil.
-func ValidateRewriteOptions(rewrite *RewriteOptions) error {
-	if rewrite == nil {
-		return nil
-	}
-	if rewrite.IsEmpty() {
-		return fmt.Errorf("at least one rewrite option must be specified")
-	}
-	return nil
 }

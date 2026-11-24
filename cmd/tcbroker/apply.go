@@ -147,8 +147,18 @@ func printPlanSummary(plan *manager.ApplyPlan, dryRun bool) {
 func formatManagedFilterLine(f state.ManagedFilter) string {
 	line := fmt.Sprintf("[%s] %s (%s) -> %s  pref=%d  match=%s",
 		f.RuleName, f.SrcIntf, f.Hook, f.DstIntf, f.Pref, f.Filter.Summary())
+	var extras []string
+	if !f.RateLimit.IsEmpty() {
+		extras = append(extras, f.RateLimit.Summary())
+	}
+	if !f.VLAN.IsEmpty() {
+		extras = append(extras, f.VLAN.Summary())
+	}
 	if !f.Rewrite.IsEmpty() {
-		line += fmt.Sprintf("  rewrite=%s", f.Rewrite.Summary())
+		extras = append(extras, "rw:"+f.Rewrite.Summary())
+	}
+	if len(extras) > 0 {
+		line += "  [" + strings.Join(extras, ", ") + "]"
 	}
 	return line
 }

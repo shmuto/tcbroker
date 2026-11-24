@@ -10,7 +10,7 @@ func TestRunner_Run(t *testing.T) {
 	runner := NewRunner(false, false)
 
 	// Execute a simple, read-only command.
-	stdout, stderr, err := runner.Run("-V")
+	stdout, stderr, err := runner.RunRead("-V")
 
 	if err != nil {
 		t.Fatalf("Run() returned an unexpected error: %v, stderr: %s", err, stderr)

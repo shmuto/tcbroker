@@ -136,6 +136,10 @@ func ParseFilterStats(output string) ([]FilterStats, error) {
 				currentAction.Type = "pedit"
 			case strings.Contains(line, "csum"):
 				currentAction.Type = "csum"
+			case strings.Contains(line, "vlan"):
+				currentAction.Type = "vlan"
+			case strings.Contains(line, "police"):
+				currentAction.Type = "police"
 			default:
 				currentAction.Type = "other"
 			}

@@ -129,11 +129,12 @@ flowchart LR
 - Prometheus `/metrics` エンドポイント（ルール・フィルタ単位の packets / bytes / dropped / health）
 - Docker イメージの `NET_ADMIN` 最小権限運用ガイド & `/run/tcbroker` マウント対応
 
-### Phase 3: NPB パケット加工・運用機能の強化
-- **ポートエイリアス（Labels）**: NIC 名に役割名・説明を付与（例: `eth0` → `wan-uplink`）
-- **VLAN タグ操作（`vlan push` / `pop`）**: 複数タップ元を集約する際の入力元識別タグ付与
-- **レート制限 / サンプリング（`police` / `sample`）**: 高トラフィック時のセンサー保護
-- **宛先 MAC / 出力 IF の自動解決**: ルーティングテーブル・ARP 参照により `dst_mac` の手書きを不要化
+### Phase 3: NPB パケット加工・運用機能の強化（進行中 🚧）
+- ✅ **ポートエイリアス（Labels）**: NIC 名に役割名・説明を付与（例: `eth0` → `wan-uplink`）し CLI / WebUI に反映
+- ✅ **VLAN タグ操作（`vlan push` / `pop`）**: 複数タップ元を集約する際の非破壊タグ付与（`push` → `mirred` → `pop`）
+- ✅ **安全なレート制限（`rate_limit` / `police`）**: `conform-exceed continue/pipe` により本番通信を落とさずミラー量のみ上限設定
+- ⬜ **サンプリング（`sample`）**: 高トラフィック時の間引きサンプリング
+- ⬜ **宛先 MAC / 出力 IF の自動解決**: ルーティングテーブル・ARP 参照により `dst_mac` の手書きを不要化
 
 ### Phase 4: 遠隔ミラー & マルチノード拡張
 - **カプセル化宛先（VXLAN / GRE / ERSPAN）**: L2 直結していない遠隔ホスト・クラウド上の監視基盤へのミラー転送

@@ -3,13 +3,28 @@ package config
 import (
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 
 	"tcbroker/pkg/filter"
 )
 
+var (
+	reTCRate  = regexp.MustCompile(`^[1-9][0-9]*(\.[0-9]+)?(bit|kbit|mbit|gbit|tbit|bps|kbps|mbps|gbps)$`)
+	reTCBurst = regexp.MustCompile(`^[1-9][0-9]*(b|kb|mb|gb|k|m|g)?$`)
+)
+
 // Validate checks if the entire configuration is valid.
 func (c *Config) Validate() error {
+	for iface, p := range c.Ports {
+		if strings.TrimSpace(iface) == "" {
+			return fmt.Errorf("ports entry cannot have an empty interface name")
+		}
+		if p.Role != "" && p.Role != "tap" && p.Role != "tool" {
+			return fmt.Errorf("invalid ports[%q].role %q: must be 'tap' or 'tool'", iface, p.Role)
+		}
+	}
+
 	if len(c.Rules) == 0 {
 		return fmt.Errorf("at least one rule is required under 'rules'")
 	}
@@ -58,6 +73,16 @@ func (r *Rule) Validate() error {
 			return fmt.Errorf("invalid rewrite: %w", err)
 		}
 	}
+	if r.VLAN != nil {
+		if err := validateVLAN(r.VLAN); err != nil {
+			return fmt.Errorf("invalid vlan: %w", err)
+		}
+	}
+	if r.RateLimit != nil {
+		if err := validateRateLimit(r.RateLimit); err != nil {
+			return fmt.Errorf("invalid rate_limit: %w", err)
+		}
+	}
 
 	for i, dst := range r.Dst {
 		if strings.TrimSpace(dst.Intf) == "" {
@@ -69,6 +94,16 @@ func (r *Rule) Validate() error {
 		if dst.Rewrite != nil {
 			if err := validateRewrite(dst.Rewrite); err != nil {
 				return fmt.Errorf("invalid dst[%d].rewrite: %w", i, err)
+			}
+		}
+		if dst.VLAN != nil {
+			if err := validateVLAN(dst.VLAN); err != nil {
+				return fmt.Errorf("invalid dst[%d].vlan: %w", i, err)
+			}
+		}
+		if dst.RateLimit != nil {
+			if err := validateRateLimit(dst.RateLimit); err != nil {
+				return fmt.Errorf("invalid dst[%d].rate_limit: %w", i, err)
 			}
 		}
 	}
@@ -125,27 +160,51 @@ func validateRewrite(rw *filter.RewriteOptions) error {
 		return fmt.Errorf("at least one field (dst_mac, src_mac, dst_ip, src_ip) must be specified")
 	}
 
-	if rw.DstMAC != "" {
-		if !isValidMAC(rw.DstMAC) {
-			return fmt.Errorf("invalid dst_mac %q: must be a 6-byte MAC address (e.g. 52:54:00:12:34:56)", rw.DstMAC)
-		}
+	if rw.DstMAC != "" && !isValidMAC(rw.DstMAC) {
+		return fmt.Errorf("invalid dst_mac %q: must be a 6-byte MAC address (e.g. 52:54:00:12:34:56)", rw.DstMAC)
 	}
-	if rw.SrcMAC != "" {
-		if !isValidMAC(rw.SrcMAC) {
-			return fmt.Errorf("invalid src_mac %q: must be a 6-byte MAC address (e.g. 52:54:00:12:34:56)", rw.SrcMAC)
-		}
+	if rw.SrcMAC != "" && !isValidMAC(rw.SrcMAC) {
+		return fmt.Errorf("invalid src_mac %q: must be a 6-byte MAC address (e.g. 52:54:00:12:34:56)", rw.SrcMAC)
 	}
-	if rw.DstIP != "" {
-		if !isValidIPv4(rw.DstIP) {
-			return fmt.Errorf("invalid dst_ip %q: must be a valid IPv4 address", rw.DstIP)
-		}
+	if rw.DstIP != "" && !isValidIPv4(rw.DstIP) {
+		return fmt.Errorf("invalid dst_ip %q: must be a valid IPv4 address", rw.DstIP)
 	}
-	if rw.SrcIP != "" {
-		if !isValidIPv4(rw.SrcIP) {
-			return fmt.Errorf("invalid src_ip %q: must be a valid IPv4 address", rw.SrcIP)
-		}
+	if rw.SrcIP != "" && !isValidIPv4(rw.SrcIP) {
+		return fmt.Errorf("invalid src_ip %q: must be a valid IPv4 address", rw.SrcIP)
 	}
 
+	return nil
+}
+
+func validateVLAN(v *filter.VLANOptions) error {
+	if v == nil {
+		return nil
+	}
+	if v.IsEmpty() {
+		return fmt.Errorf("must specify either push (1-4094) or pop: true")
+	}
+	if v.Push != 0 && v.Pop {
+		return fmt.Errorf("cannot specify both push and pop on the same target")
+	}
+	if v.Push < 0 || v.Push > 4094 {
+		return fmt.Errorf("invalid vlan.push %d: must be between 1 and 4094", v.Push)
+	}
+	return nil
+}
+
+func validateRateLimit(rl *filter.RateLimitOptions) error {
+	if rl == nil {
+		return nil
+	}
+	if rl.Rate == "" {
+		return fmt.Errorf("rate is required when rate_limit is specified (e.g. 100mbit)")
+	}
+	if !reTCRate.MatchString(rl.Rate) {
+		return fmt.Errorf("invalid rate %q: expected e.g. 10mbit, 1gbit, 500kbit, 100mbps", rl.Rate)
+	}
+	if rl.Burst != "" && !reTCBurst.MatchString(rl.Burst) {
+		return fmt.Errorf("invalid burst %q: expected e.g. 256kb, 1mb, 64k", rl.Burst)
+	}
 	return nil
 }
 
